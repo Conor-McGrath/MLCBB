@@ -1,0 +1,400 @@
+---
+title: "Creating 2020-2021 DataSet WNCAAB"
+author: "Tiffany Tseng"
+date: "11/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rvest)
+library(dplyr)
+library(lubridate)
+library(plyr)
+library(xts)
+library(stringdist)
+library(tidyr)
+library(readr)
+library(stringr)
+```
+
+
+Download 2020-2021 season schedule.
+```{r download schedule}
+wschedule2021 <- read_csv('women_schedule.csv')
+```
+
+
+```{r}
+wschedule_2021 <- wschedule2021 %>%
+  mutate(Loc = 2)
+```
+
+```{r}
+colnames(wschedule_2021) <-  c('team1', 'opponent', 'DateofGame', 'Location', 'Loc')
+```
+
+```{r}
+WTeamNames <- read_csv("WTeams.csv")
+```
+
+```{r rename colleges}
+wschedule_2021$opponent <- wschedule_2021$opponent %>%
+  str_replace_all(c("State" = "St"))
+
+wschedule_2021$team1<- wschedule_2021$team1 %>%
+  str_replace_all(c("State" = "St"))
+```
+
+
+Take out the last word in the team1 columns as many last words are just abbreviations of the team name 
+```{r}
+wschedule_2021 <- wschedule_2021 %>%
+  mutate(team1 = str_replace(team1, '\\s[^ ]+$', ' ')) %>%
+  mutate(opponent = str_replace(opponent, '\\s[^ ]+$', ' '))
+
+wschedule_2021$team1 <- trimws(wschedule_2021$team1, "r")
+wschedule_2021$opponent <- trimws(wschedule_2021$opponent, "r")
+```
+
+
+
+```{r}
+wname_comparison <- cbind(sort(unique(wschedule_2021$team1[!(wschedule_2021$team1 %in% WTeamNames$TeamName)])), sort(unique(WTeamNames$TeamName[!(WTeamNames$TeamName %in% wschedule_2021$team1)])))
+
+```
+
+```{r}
+library(stringdist)
+d <- expand.grid(wschedule_2021$team1,WTeamNames$TeamName) # Distance matrix in long form
+names(d) <- c("wschedule_2021","WTeamName")
+d$dist <- stringdist(d$wschedule_2021,d$WTeamName, method="jaccard") # String edit distance (use your favorite function here)
+
+# Greedy assignment heuristic (Your favorite heuristic here)
+WgreedyAssign <- function(wschedule_2021,WTeamNames,d){
+  x <- numeric(length(wschedule_2021)) # assgn variable: 0 for unassigned but assignable, 
+  # 1 for already assigned, -1 for unassigned and unassignable
+  while(any(x==0)){
+    min_d <- min(d[x==0]) # identify closest pair, arbitrarily selecting 1st if multiple pairs
+    a_sel <- wschedule_2021[d==min_d & x==0][1] 
+    b_sel <- WTeamNames[d==min_d & wschedule_2021 == a_sel & x==0][1] 
+    x[wschedule_2021==a_sel & WTeamNames == b_sel] <- 1
+    x[x==0 & (wschedule_2021==a_sel|WTeamNames==b_sel)] <- -1
+  }
+  cbind(wschedule_2021=wschedule_2021[x==1],WTeamNames=WTeamNames[x==1],d=d[x==1])
+}
+wclosest_match <- data.frame(WgreedyAssign(as.character(d$wschedule_2021),as.character(d$WTeamName),d$dist))
+```
+
+```{r}
+
+wclosest_match <- wclosest_match %>% 
+  filter(!duplicated(paste0(pmax(wschedule_2021, WTeamNames), pmin(wschedule_2021, WTeamNames))))
+
+```
+
+```{r}
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Alliant Intl'] <- 'Alliant Intl'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Armstrong St'] <- 'Armstrong St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Augusta'] <- 'Augusta'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Bethune-Cookman'] <- 'Bethune-Cookman'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Birmingham So'] <- 'Birmingham So'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Brooklyn'] <- 'Brooklyn'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Brown'] <- 'Brown'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Centenary'] <- 'Centenary'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Central Conn'] <- 'Central Connecticut St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Connecticut'] <- 'UConn'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Cornell'] <- 'Cornell'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'CS Northridge'] <- 'CSU Northridge'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Dartmouth'] <- 'Dartmouth'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'SIUE'] <- 'SIU Edwardsville'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'ETSU'] <- 'East Tennessee St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Hardin-Simmons'] <- 'Hardin-Simmons'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Harvard'] <- 'Harvard'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'IL Chicago'] <- 'UIC'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Illinois'] <- 'Illinois'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Indiana'] <- 'Indiana'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Iowa'] <- 'Iowa'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'PFW'] <- "Purdue Fort Wayne"
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Kent'] <- 'Kent St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Maryland'] <- 'Maryland'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'MD E Shore'] <- 'MD E Shore'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Memphis'] <- 'Memphis'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Michigan'] <- 'Michigan'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Michigan St'] <- 'Michigan St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Minnesota'] <- 'Minnesota'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Missouri KC'] <- 'UM Kansas City'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Morris Brown'] <- 'Morris Brown'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'MTSU'] <- 'Middle Tennessee'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'N Colorado'] <- 'Northern Colorado'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'NC A&T'] <- 'North Carolina A&T'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'NE Illinois'] <- 'NE Illinois'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Northwestern'] <- 'Northwestern'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Northwestern LA'] <- 'Northwestern St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Ohio St'] <- 'Ohio St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Okla City'] <- 'Okla City'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Penn'] <- 'UPenn'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == "Penn St"] <- "Penn St"
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Princeton'] <- 'Princeton'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Purdue'] <- 'Purdue'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Rutgers'] <- 'Rutgers'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'S Carolina St'] <- 'South Carolina St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'S Illinois'] <- 'Southern Illinois'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Savannah St'] <- 'Savannah St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'South Carolina'] <- 'South Carolina'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'South Florida'] <- 'South Florida'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Southern Univ'] <- 'Southern'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'St Louis'] <- 'Saint Louis'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'TAM C. Christi'] <- 'Texas A&M-CC'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'TX Southern'] <- 'Texas Southern'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'ULM'] <- 'UL Monroe'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'UT San Antonio'] <- 'UTSA'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Utica'] <- 'Utica'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'W Texas A&M'] <- 'W Texas A&M'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Wichita St'] <- 'Wichita St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Wisconsin'] <- 'Wisconsin'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Yale'] <- 'Yale'
+
+```
+
+```{r}
+wschedule_join1 <- left_join(wschedule_2021, wclosest_match, by = c("team1" = "wschedule_2021")) %>%
+  select(-7)
+
+```
+
+```{r}
+
+d <- expand.grid(wschedule_2021$opponent,WTeamNames$TeamName) # Distance matrix in long form
+names(d) <- c("wschedule_2021","WTeamName")
+d$dist <- stringdist(d$wschedule_2021,d$WTeamName, method="jaccard") # String edit distance (use your favorite function here)
+
+# Greedy assignment heuristic (Your favorite heuristic here)
+WgreedyAssign <- function(wschedule_2021,WTeamNames,d){
+  x <- numeric(length(wschedule_2021)) # assgn variable: 0 for unassigned but assignable, 
+  # 1 for already assigned, -1 for unassigned and unassignable
+  while(any(x==0)){
+    min_d <- min(d[x==0]) # identify closest pair, arbitrarily selecting 1st if multiple pairs
+    a_sel <- wschedule_2021[d==min_d & x==0][1] 
+    b_sel <- WTeamNames[d==min_d & wschedule_2021 == a_sel & x==0][1] 
+    x[wschedule_2021==a_sel & WTeamNames == b_sel] <- 1
+    x[x==0 & (wschedule_2021==a_sel|WTeamNames==b_sel)] <- -1
+  }
+  cbind(wschedule_2021=wschedule_2021[x==1],WTeamNames=WTeamNames[x==1],d=d[x==1])
+}
+wclosest_match <- data.frame(WgreedyAssign(as.character(d$wschedule_2021),as.character(d$WTeamName),d$dist))
+
+```
+
+```{r}
+wclosest_match <- wclosest_match %>% 
+  filter(!duplicated(paste0(pmax(wschedule_2021, WTeamNames), pmin(wschedule_2021, WTeamNames))))
+```
+
+```{r}
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Alliant Intl'] <- 'Alliant Intl'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Armstrong St'] <- 'Armstrong St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Augusta'] <- 'Augusta'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Bethune-Cookman'] <- 'Bethune-Cookman'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Birmingham So'] <- 'Birmingham So'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Brooklyn'] <- 'Brooklyn'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Brown'] <- 'Brown'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Centenary'] <- 'Centenary'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Central Conn'] <- 'Central Connecticut St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Connecticut'] <- 'UConn'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Cornell'] <- 'Cornell'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'CS Northridge'] <- 'CSU Northridge'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Dartmouth'] <- 'Dartmouth'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'SIUE'] <- 'SIU Edwardsville'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'ETSU'] <- 'East Tennessee St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Hardin-Simmons'] <- 'Hardin-Simmons'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Harvard'] <- 'Harvard'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'IL Chicago'] <- 'UIC'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Illinois'] <- 'Illinois'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Indiana'] <- 'Indiana'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Iowa'] <- 'Iowa'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'PFW'] <- "Purdue Fort Wayne"
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Kent'] <- 'Kent St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Maryland'] <- 'Maryland'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'MD E Shore'] <- 'MD E Shore'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Memphis'] <- 'Memphis'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Michigan'] <- 'Michigan'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Michigan St'] <- 'Michigan St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Minnesota'] <- 'Minnesota'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Missouri KC'] <- 'UM Kansas City'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Morris Brown'] <- 'Morris Brown'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'MTSU'] <- 'Middle Tennessee'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'N Colorado'] <- 'Northern Colorado'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'NC A&T'] <- 'North Carolina A&T'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'NE Illinois'] <- 'NE Illinois'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Northwestern'] <- 'Northwestern'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Northwestern LA'] <- 'Northwestern St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Ohio St'] <- 'Ohio St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Okla City'] <- 'Okla City'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Penn'] <- 'UPenn'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == "Penn St"] <- "Penn St"
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Princeton'] <- 'Princeton'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Purdue'] <- 'Purdue'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Rutgers'] <- 'Rutgers'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'S Carolina St'] <- 'South Carolina St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'S Illinois'] <- 'Southern Illinois'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Savannah St'] <- 'Savannah St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'South Carolina'] <- 'South Carolina'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'South Florida'] <- 'South Florida'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Southern Univ'] <- 'Southern'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'St Louis'] <- 'Saint Louis'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'TAM C. Christi'] <- 'Texas A&M-CC'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'TX Southern'] <- 'Texas Southern'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'ULM'] <- 'UL Monroe'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'UT San Antonio'] <- 'UTSA'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Utica'] <- 'Utica'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'W Texas A&M'] <- 'W Texas A&M'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Wichita St'] <- 'Wichita St'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Wisconsin'] <- 'Wisconsin'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Yale'] <- 'Yale'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'Duquesne'] <- 'Duquesne'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'W Salem St'] <- 'Winston-Salem'
+wclosest_match$wschedule_2021[wclosest_match$WTeamNames == 'S Dakota St'] <- 'South Dakota St'
+```
+
+```{r}
+wschedule_join2 <- left_join(wschedule_join1, wclosest_match, by = c("opponent" = "wschedule_2021"))
+```
+
+```{r}
+colnames(wschedule_join2)[colnames(wschedule_join2) == "WTeamNames.x"] <- "team1_proper_name"
+colnames(wschedule_join2)[colnames(wschedule_join2) == "WTeamNames.y"] <- "opp_proper_name"
+```
+
+```{r}
+wschedule_join2 <- wschedule_join2 %>%
+  select(-8)
+```
+
+```{r}
+load("womens_model.rda")
+```
+
+```{r}
+results2020 <- womens_model %>%
+  filter(Season == 2020)
+```
+
+```{r}
+results2020_reordered <- results2020[order(desc(results2020$DayNum)),]
+```
+
+```{r}
+# remove duplicates
+
+team1_stats <- results2020_reordered[!duplicated(results2020_reordered$team1), ]
+
+team1_stats <- team1_stats %>%
+  select(1,3,9,14,17:36, 61:62)
+```
+
+```{r}
+opponent_stats <- results2020_reordered[!duplicated(results2020_reordered$opponent),]
+
+opponent_stats <- opponent_stats %>%
+  select(2,4,9,15, 37:56, 63:64)
+
+
+```
+
+```{r}
+tot_team_szn_stats <- inner_join(team1_stats, opponent_stats, by = c("team1" = "opponent"))
+```
+
+```{r}
+tot_team_szn_stats <- tot_team_szn_stats %>%
+  mutate(ppg = ifelse(DayNum.x > DayNum.y, ppg, opp_ppg))%>%
+  mutate(Ranking = ifelse(DayNum.x > DayNum.y, Ranking, Opp_Ranking)) %>%
+  mutate(pts_all = ifelse(DayNum.x > DayNum.y, pts_all, opp_pts_all))%>%
+  mutate(fg_att = ifelse(DayNum.x > DayNum.y, fg_att, opp_fg_att))%>%
+  mutate(fg_acc = ifelse(DayNum.x > DayNum.y, fg_acc, opp_fg_acc))%>%
+  mutate(fg3_att = ifelse(DayNum.x > DayNum.y, fg3_att, opp_fg3_att))%>%
+  mutate(fg3_acc = ifelse(DayNum.x > DayNum.y, fg3_acc, opp_fg3_acc))%>%
+  mutate(ft_att = ifelse(DayNum.x > DayNum.y, ft_att, opp_ft_att))%>%
+  mutate(ft_acc = ifelse(DayNum.x > DayNum.y, ft_acc, opp_ft_accuracy))%>%
+  mutate(def_reb = ifelse(DayNum.x > DayNum.y, def_reb, opp_def_reb))%>%
+  mutate(off_reb = ifelse(DayNum.x > DayNum.y, off_reb, opp_off_reb))%>%
+  mutate(ast = ifelse(DayNum.x > DayNum.y, ast, opp_ast))%>%
+  mutate(to = ifelse(DayNum.x > DayNum.y, to, opp_to))%>%
+  mutate(stl = ifelse(DayNum.x > DayNum.y, stl, opp_stl))%>%
+  mutate(blk = ifelse(DayNum.x > DayNum.y, blk, opp_blk))%>%
+  mutate(pf = ifelse(DayNum.x > DayNum.y, pf, opp_pf))%>%
+  mutate(num_poss = ifelse(DayNum.x > DayNum.y, num_poss, opp_num_poss))%>%
+  mutate(off_eff = ifelse(DayNum.x > DayNum.y, off_eff, opp_off_eff))%>%
+  mutate(def_eff = ifelse(DayNum.x > DayNum.y, def_eff, opp_def_eff))%>%
+  mutate(fg3_def = ifelse(DayNum.x > DayNum.y, fg3_def, opp_fg3_def))%>%
+  mutate(pf_forced = ifelse(DayNum.x > DayNum.y, pf_forced, opp_pf_forced))%>%
+  mutate(w_pct = ifelse(DayNum.x > DayNum.y, w_pct, opp_w_pct))%>%
+  mutate(result_avg = ifelse(DayNum.x > DayNum.y, result_avg, opp_result_avg))
+```
+
+```{r}
+tot_team_szn_stats <- tot_team_szn_stats %>%
+  select(1,2,4:26)
+```
+
+```{r}
+w_team_szn_stats <- tot_team_szn_stats
+```
+
+```{r}
+save(w_team_szn_stats, file = "w_team_szn_stats.rda")
+```
+
+```{r}
+wschedule_join3 <- left_join(wschedule_join2, w_team_szn_stats, by = c("team1_proper_name" = "team1"))
+
+wschedule_join4 <- left_join(wschedule_join3, w_team_szn_stats, by = c("opp_proper_name" = "team1"))
+
+```
+
+```{r}
+preds_table_2021 <- wschedule_join4
+```
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select(-"team1", -"opponent", -"TeamID.x", -"TeamID.y")
+```
+
+```{r}
+colnames(preds_table_2021) <- c("DateofGame", "Location", "Loc", "team1", "opponent", "Ranking", "ppg", "pts_all", "fg_att", "fg_acc", "fg3_att", "fg3_acc", "ft_att", "ft_acc", "def_reb", "off_reb", "ast", "to", "stl", "blk", "pf", "num_poss", "off_eff", "def_eff", "fg3_def", "pf_forced", "w_pct", "result_avg", 
+                                
+"Opp_Ranking", "opp_ppg", "opp_pts_all", "opp_fg_att", "opp_fg_acc", "opp_fg3_att", "opp_fg3_acc", "opp_ft_att", "opp_ft_accuracy", "opp_def_reb", "opp_off_reb", "opp_ast", "opp_to", "opp_stl", "opp_blk", "opp_pf", "opp_num_poss", "opp_off_eff", "opp_def_eff", "opp_fg3_def", "opp_pf_forced", "opp_w_pct", "opp_result_avg"    )                            
+                                
+```
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select("team1", "opponent", "Location","DateofGame", "Ranking","Opp_Ranking", "Loc", "w_pct", "result_avg", "opp_w_pct", "opp_result_avg", "ppg", "pts_all", "fg_att", "fg_acc", "fg3_att", "fg3_acc", "ft_att", "ft_acc", "def_reb", "off_reb", "ast", "to", "stl", "blk", "pf", "num_poss", "off_eff", "def_eff", "fg3_def", "pf_forced",  "opp_ppg", "opp_pts_all", "opp_fg_att", "opp_fg_acc", "opp_fg3_att", "opp_fg3_acc", "opp_ft_att", "opp_ft_accuracy", "opp_def_reb", "opp_off_reb", "opp_ast", "opp_to", "opp_stl", "opp_blk", "opp_pf", "opp_num_poss", "opp_off_eff", "opp_def_eff", "opp_fg3_def", "opp_pf_forced")
+```
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  mutate(Ast_TO_Ratio = ast/to) %>%
+  mutate(Opp_Ast_TO_Ratio = opp_ast/opp_to)
+```
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select(-ast, -to, -opp_ast, -opp_to)
+```
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  drop_na(team1, opponent)
+```
+
+```{r}
+wpreds_table_2021 <- preds_table_2021 
+```
+
+```{r}
+save(wpreds_table_2021, file = "wpredstbl.rda")
+```
+

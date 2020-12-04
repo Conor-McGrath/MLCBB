@@ -1,0 +1,781 @@
+---
+title: "Creating 2020-2021 DataSet MNCAAB"
+author: "Conor McGrath"
+date: "11/17/2020"
+output: html_document
+---
+
+Here we want to create a dataframe of all the upcoming games for the 2020-2021 season. We also want to have all of our predictor variables for each team in a game so that we can feed the dataframe into our prediction function using our predictive model. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rvest)
+library(dplyr)
+library(lubridate)
+library(plyr)
+library(xts)
+library(stringdist)
+library(tidyr)
+library(readr)
+library(stringr)
+```
+
+# Scrape Schedule
+
+Download 2020-2021 season schedule from teamrankings.com
+
+```{r download schedule}
+schedule2021 <- read_html("https://www.teamrankings.com/ncb/schedules/season/")
+
+tbls2021 <- html_nodes(schedule2021, "table")
+
+tbls_ls2021 <- schedule2021 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+schedule_2021 <- (tbls_ls2021[[1]]) %>%
+  select(1,2,3)
+```
+
+# Cleaning the Schedule Data
+
+Now we just want to get the schedule into a format that we can work with.
+
+Whenever a team name comes before the '@' symbol, we know that team is going to play an away game so we will assign their Loc to 0 indicating an away game. In this data, if there is a "vs." that means both teams are playing at a neutral location and thus we will assign the Loc to 1 indicating neutral.
+
+```{r}
+schedule_2021 <- schedule_2021 %>%
+  mutate(Loc = ifelse(grepl("@",`Wed Nov 25`), 0, 1))
+```
+
+```{r}
+schedule_2021 <- schedule_2021 %>%
+  mutate(`Wed Nov 25` = gsub( "@", "vs.", `Wed Nov 25`))
+```
+
+```{r}
+schedule_2021 <- schedule_2021 %>%
+  separate(`Wed Nov 25`, c("team1", "opponent"), sep = " vs. ")
+```
+
+Get the date for each game.
+
+```{r}
+schedule_2021 <- schedule_2021 %>%
+  mutate(DateofGame = ifelse(Location == "Location", team1, 0))
+```
+
+Set the opening date.
+
+```{r}
+schedule_2021$DateofGame[1] = "Wed Nov 25"
+```
+
+Remove unnecessary rows. 
+
+```{r}
+schedule_2021$DateofGame[schedule_2021$DateofGame==0] <- NA
+schedule_2021$DateofGame <- na.locf(schedule_2021$DateofGame, na.rm = FALSE)
+```
+
+# Join Schedule Names with Kaggle Names
+
+Now, we want to import the TeamNames dataset from Kaggle so we can convert the spelling of team names on the teamrankings.com schedule to the spelling of team names in the Kaggle dataset.
+
+```{r}
+TeamNames <- read_csv("MTeams.csv")
+```
+
+We're only focusing on D1 teams so we can filter out teams that no longer play in Division I.
+
+```{r}
+# Filter out teams no longer D1
+TeamNames <- TeamNames %>%
+  filter(LastD1Season == 2020)
+```
+
+Get rid of trailing space. 
+
+```{r}
+schedule_2021$team1 <- str_trim(schedule_2021$team1, side = c("right"))
+schedule_2021$opponent <- str_trim(schedule_2021$opponent, side = c("left"))
+```
+
+The following code chunks do some more cleaning.
+
+```{r}
+schedule_2021 <- schedule_2021 %>%
+  filter(!(str_detect(team1, "\\d")))
+
+```
+
+```{r}
+schedule_2021 <- schedule_2021 %>%
+  filter(!(is.na(opponent)))
+
+```
+
+There are some non-divsion I teams on the schedule. However, Kaggle does not incorporate any non_division I team into its dataset. Therefore we need to get rid of any teams on the schedule that are not in division I.
+
+```{r}
+## Delete non D1 teams
+nonD1teams <- c("Adams St.", "Bacone", "Belhaven College","Bellarmine", "Bethesda University", "Bowie State", "Brescia", "Brewton Parker College", "California Baptist", "Campbellsville-Harrodsburg", "Carver Bible College", "Central Baptist", "Champion Baptist", "Coker", "Corban College", "Covenant", "Crowley's Ridge College", "Cumberland", "Dallas Christian", "Dixie State", "Eastern Oregon", "Flagler College", "Georgia Southwestern State", "Greensboro", "Hardin-Simmons", "Howard Payne", "Judson College", "Kentucky Wesleyan", "Lancaster Bible College", "Le Tourneau", "Limestone", "Lincoln", "Louisiana College", "Loyola (LA)", "LSU Shreveport", "Mars Hill", "Mary Hardin-Baylor", "McMurry", "Middle Georgia St.", "Miss Val St", "Mobile", "Mount St. Joseph", "NC-Wesleyan", "North Georgia", "Our Lady of the Lake", "Paul Quinn", "Piedmont", "Piedmont International", "Point Park", "Rhode Island College", "Regent University", "Rogers State", "SAGU American Indian College", "San Diego Christian", "Southwestern Christian", "St. Andrews Presbyterian", "St. Katherine", "St. Thomas (TX)", "Tarleton State", "Texas A&M-Texarkana", "Toccoa Falls", "Trinity Baptist", "Virginia Wesleyan", "Westminster College", "Washington Adventist", "Webber", "Westmont", "William Carey", "William Jessup", "Xavier (LA)")
+schedule_2021 <- schedule_2021[!(schedule_2021$team1 %in% nonD1teams), ]
+schedule_2021 <- schedule_2021[!(schedule_2021$opponent %in% nonD1teams), ]
+```
+
+Kaggle only seems to have "St" as the proper way to abbreviate "State".
+
+```{r rename colleges}
+schedule_2021$opponent <- schedule_2021$opponent %>%
+  str_replace_all(c("State" = "St"))
+
+schedule_2021$team1<- schedule_2021$team1 %>%
+  str_replace_all(c("State" = "St"))
+```
+
+Let's compare which names are not exact matches.
+
+```{r}
+name_comparison <- cbind(sort(unique(schedule_2021$team1[!(schedule_2021$team1 %in% TeamNames$TeamName)])), sort(unique(TeamNames$TeamName[!(TeamNames$TeamName %in% schedule_2021$team1)])))
+
+```
+
+Here we can see all unique names in each column (team1 in schedule, opponent in schedule, and team names in kaggle dataset)
+
+```{r}
+college_names_diffs <- cbind(sort(unique(schedule_2021$team1)), sort(unique(schedule_2021$opponent)), sort(unique(TeamNames$TeamName)))
+```
+
+Here we will run the greedy assign function in order to do some string matching so we can eventually join the schedule data with some of our other predictor data. This will give the best match for each TeamName.
+
+```{r}
+library(stringdist)
+d <- expand.grid(schedule_2021$team1,TeamNames$TeamName) # Distance matrix in long form
+names(d) <- c("schedule_2021","TeamName")
+d$dist <- stringdist(d$schedule_2021,d$TeamName, method="jaccard") # String edit distance (use your favorite function here)
+
+# Greedy assignment heuristic (Your favorite heuristic here)
+greedyAssign <- function(schedule_2021,TeamNames,d){
+  x <- numeric(length(schedule_2021)) # assgn variable: 0 for unassigned but assignable, 
+  # 1 for already assigned, -1 for unassigned and unassignable
+  while(any(x==0)){
+    min_d <- min(d[x==0]) # identify closest pair, arbitrarily selecting 1st if multiple pairs
+    a_sel <- schedule_2021[d==min_d & x==0][1] 
+    b_sel <- TeamNames[d==min_d & schedule_2021 == a_sel & x==0][1] 
+    x[schedule_2021==a_sel & TeamNames == b_sel] <- 1
+    x[x==0 & (schedule_2021==a_sel|TeamNames==b_sel)] <- -1
+  }
+  cbind(schedule_2021=schedule_2021[x==1],TeamNames=TeamNames[x==1],d=d[x==1])
+}
+closest_match <- data.frame(greedyAssign(as.character(d$schedule_2021),as.character(d$TeamName),d$dist))
+```
+
+```{r}
+closest_match <- closest_match %>% 
+  filter(!duplicated(paste0(pmax(schedule_2021, TeamNames), pmin(schedule_2021, TeamNames))))
+```
+
+The greedy assing did a good job but didn't match every team. Let's do these manually.
+
+```{r}
+
+closest_match$schedule_2021[closest_match$TeamNames == "Bethune-Cookman"] <- "Beth-Cook"
+closest_match$schedule_2021[closest_match$TeamNames == "Brown"] <- "Brown"
+closest_match$schedule_2021[closest_match$TeamNames == "Charleston So" ] <- "Charl South"
+closest_match$schedule_2021[closest_match$TeamNames == "Cornell" ] <- "Cornell"
+closest_match$schedule_2021[closest_match$TeamNames == "CS Sacramento" ] <- "Sac St"
+closest_match$schedule_2021[closest_match$TeamNames == "Dartmouth" ] <- "Dartmouth"
+closest_match$schedule_2021[closest_match$TeamNames == "East Carolina" ] <- "E Carolina"
+closest_match$schedule_2021[closest_match$TeamNames == "ETSU" ] <- "E Tenn St"
+closest_match$schedule_2021[closest_match$TeamNames == "Harvard" ] <- "Harvard"
+closest_match$schedule_2021[closest_match$TeamNames == "LIU Brooklyn" ] <- "LIU"
+closest_match$schedule_2021[closest_match$TeamNames == "Michigan" ] <- "Michigan"
+closest_match$schedule_2021[closest_match$TeamNames == "Minnesota" ] <- "Minnesota"
+closest_match$schedule_2021[closest_match$TeamNames == "Mississippi St" ] <- "Miss St"
+closest_match$schedule_2021[closest_match$TeamNames == "Missouri KC" ] <- "UMKC"
+closest_match$schedule_2021[closest_match$TeamNames == "MS Valley St" ] <- "Miss Val St"
+closest_match$schedule_2021[closest_match$TeamNames == "MTSU" ] <- "Middle Tenn"
+closest_match$schedule_2021[closest_match$TeamNames == "Nebraska" ] <- "Nebraska"
+closest_match$schedule_2021[closest_match$TeamNames == "North Florida" ] <- "N Florida"
+closest_match$schedule_2021[closest_match$TeamNames == "Northwestern" ] <- "Northwestern"
+closest_match$schedule_2021[closest_match$TeamNames == "Northwestern LA" ] <- "NW St"
+closest_match$schedule_2021[closest_match$TeamNames == "Penn" ] <- "U Penn"
+closest_match$schedule_2021[closest_match$TeamNames == "Princeton" ] <- "Princeton"
+closest_match$schedule_2021[closest_match$TeamNames == "Rutgers" ] <- "Rutgers"
+closest_match$schedule_2021[closest_match$TeamNames == "UC Santa Barbara" ] <- "UCSB"
+closest_match$schedule_2021[closest_match$TeamNames == "SMU" ] <- "S Methodist"
+closest_match$schedule_2021[closest_match$TeamNames == "South Carolina" ] <- "S Carolina"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Miss" ] <- "S Mississippi"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Univ" ] <- "Southern"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Utah" ] <- "S Utah"
+closest_match$schedule_2021[closest_match$TeamNames == "TAM C. Christi" ] <- "TX A&M-CC"
+closest_match$schedule_2021[closest_match$TeamNames == "TCU" ] <- "TX Christian"
+closest_match$schedule_2021[closest_match$TeamNames == "Tennessee St" ] <- "TN St"
+closest_match$schedule_2021[closest_match$TeamNames == "Tulane" ] <- "Tulane"
+closest_match$schedule_2021[closest_match$TeamNames == "UTRGV" ] <- "TX-Pan Am"
+closest_match$schedule_2021[closest_match$TeamNames == "UCF" ] <- "Central FL"
+closest_match$schedule_2021[closest_match$TeamNames == "Louisiana" ] <- "LA Lafayette"
+closest_match$schedule_2021[closest_match$TeamNames == "S Carolina St" ] <- "S Car St"
+closest_match$schedule_2021[closest_match$TeamNames == "ULM" ] <- "LA Monroe"
+closest_match$schedule_2021[closest_match$TeamNames == "UMBC" ] <- "Maryland BC"
+closest_match$schedule_2021[closest_match$TeamNames == "Utah St" ] <- "Utah St"
+closest_match$schedule_2021[closest_match$TeamNames == "Virginia Tech" ] <- "VA Tech"
+closest_match$schedule_2021[closest_match$TeamNames == "VMI" ] <- "VA Military"
+closest_match$schedule_2021[closest_match$TeamNames == "West Virginia" ] <- "W Virginia"
+closest_match$schedule_2021[closest_match$TeamNames == "Yale" ] <- "Yale"
+closest_match$schedule_2021[closest_match$TeamNames == "Cal Baptist" ] <- "California Baptist"
+
+```
+
+Now, we can do the join so each schedule formatted name is associated with its matching Kaggle formatted name.
+
+```{r}
+schedule_join1 <- left_join(schedule_2021, closest_match, by = c("team1" = "schedule_2021")) %>%
+  select(-8)
+```
+
+Let's repeat the same steps but this time for the opponent column.
+
+```{r}
+d <- expand.grid(schedule_2021$opponent,TeamNames$TeamName) # Distance matrix in long form
+names(d) <- c("schedule_2021","TeamName")
+d$dist <- stringdist(d$schedule_2021,d$TeamName, method="jaccard") # String edit distance (use your favorite function here)
+
+closest_match <- data.frame(greedyAssign(as.character(d$schedule_2021),as.character(d$TeamName),d$dist))
+```
+
+```{r}
+closest_match <- closest_match %>% 
+  filter(!duplicated(paste0(pmax(schedule_2021, TeamNames), pmin(schedule_2021, TeamNames))))
+```
+
+```{r}
+closest_match$schedule_2021[closest_match$TeamNames == "Bethune-Cookman"] <- "Beth-Cook"
+closest_match$schedule_2021[closest_match$TeamNames == "Brown"] <- "Brown"
+closest_match$schedule_2021[closest_match$TeamNames == "Charleston So" ] <- "Charl South"
+closest_match$schedule_2021[closest_match$TeamNames == "Cornell" ] <- "Cornell"
+closest_match$schedule_2021[closest_match$TeamNames == "CS Sacramento" ] <- "Sac St"
+closest_match$schedule_2021[closest_match$TeamNames == "Dartmouth" ] <- "Dartmouth"
+closest_match$schedule_2021[closest_match$TeamNames == "East Carolina" ] <- "E Carolina"
+closest_match$schedule_2021[closest_match$TeamNames == "ETSU" ] <- "E Tenn St"
+closest_match$schedule_2021[closest_match$TeamNames == "Harvard" ] <- "Harvard"
+closest_match$schedule_2021[closest_match$TeamNames == "LIU Brooklyn" ] <- "LIU"
+closest_match$schedule_2021[closest_match$TeamNames == "Michigan" ] <- "Michigan"
+closest_match$schedule_2021[closest_match$TeamNames == "Minnesota" ] <- "Minnesota"
+closest_match$schedule_2021[closest_match$TeamNames == "Mississippi St" ] <- "Miss St"
+closest_match$schedule_2021[closest_match$TeamNames == "Missouri KC" ] <- "UMKC"
+closest_match$schedule_2021[closest_match$TeamNames == "MS Valley St" ] <- "Miss Val St"
+closest_match$schedule_2021[closest_match$TeamNames == "MTSU" ] <- "Middle Tenn"
+closest_match$schedule_2021[closest_match$TeamNames == "Nebraska" ] <- "Nebraska"
+closest_match$schedule_2021[closest_match$TeamNames == "North Florida" ] <- "N Florida"
+closest_match$schedule_2021[closest_match$TeamNames == "Northwestern" ] <- "Northwestern"
+closest_match$schedule_2021[closest_match$TeamNames == "Northwestern LA" ] <- "NW State"
+closest_match$schedule_2021[closest_match$TeamNames == "Penn" ] <- "U Penn"
+closest_match$schedule_2021[closest_match$TeamNames == "Princeton" ] <- "Princeton"
+closest_match$schedule_2021[closest_match$TeamNames == "Rutgers" ] <- "Rutgers"
+closest_match$schedule_2021[closest_match$TeamNames == "UC Santa Barbara" ] <- "UCSB"
+closest_match$schedule_2021[closest_match$TeamNames == "SMU" ] <- "S Methodist"
+closest_match$schedule_2021[closest_match$TeamNames == "South Carolina" ] <- "S Carolina"
+closest_match$schedule_2021[closest_match$TeamNames == "Bethune-Cookman"] <- "Beth-Cook"
+closest_match$schedule_2021[closest_match$TeamNames == "Brown"] <- "Brown"
+closest_match$schedule_2021[closest_match$TeamNames == "Charleston So" ] <- "Charl South"
+closest_match$schedule_2021[closest_match$TeamNames == "Cornell" ] <- "Cornell"
+closest_match$schedule_2021[closest_match$TeamNames == "CS Sacramento" ] <- "Sac St"
+closest_match$schedule_2021[closest_match$TeamNames == "Dartmouth" ] <- "Dartmouth"
+closest_match$schedule_2021[closest_match$TeamNames == "East Carolina" ] <- "E Carolina"
+closest_match$schedule_2021[closest_match$TeamNames == "ETSU" ] <- "E Tenn St"
+closest_match$schedule_2021[closest_match$TeamNames == "Harvard" ] <- "Harvard"
+closest_match$schedule_2021[closest_match$TeamNames == "LIU Brooklyn" ] <- "LIU"
+closest_match$schedule_2021[closest_match$TeamNames == "Michigan" ] <- "Michigan"
+closest_match$schedule_2021[closest_match$TeamNames == "Minnesota" ] <- "Minnesota"
+closest_match$schedule_2021[closest_match$TeamNames == "Mississippi St" ] <- "Miss St"
+closest_match$schedule_2021[closest_match$TeamNames == "Missouri KC" ] <- "UMKC"
+closest_match$schedule_2021[closest_match$TeamNames == "MS Valley St" ] <- "Miss Val St"
+closest_match$schedule_2021[closest_match$TeamNames == "MTSU" ] <- "Middle Tenn"
+closest_match$schedule_2021[closest_match$TeamNames == "Nebraska" ] <- "Nebraska"
+closest_match$schedule_2021[closest_match$TeamNames == "North Florida" ] <- "N Florida"
+closest_match$schedule_2021[closest_match$TeamNames == "Northwestern" ] <- "Northwestern"
+closest_match$schedule_2021[closest_match$TeamNames == "Northwestern LA" ] <- "NW St"
+closest_match$schedule_2021[closest_match$TeamNames == "Penn" ] <- "U Penn"
+closest_match$schedule_2021[closest_match$TeamNames == "Princeton" ] <- "Princeton"
+closest_match$schedule_2021[closest_match$TeamNames == "Rutgers" ] <- "Rutgers"
+closest_match$schedule_2021[closest_match$TeamNames == "UC Santa Barbara" ] <- "UCSB"
+closest_match$schedule_2021[closest_match$TeamNames == "SMU" ] <- "S Methodist"
+closest_match$schedule_2021[closest_match$TeamNames == "South Carolina" ] <- "S Carolina"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Miss" ] <- "S Mississippi"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Univ" ] <- "Southern"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Utah" ] <- "S Utah"
+closest_match$schedule_2021[closest_match$TeamNames == "TAM C. Christi" ] <- "TX A&M-CC"
+closest_match$schedule_2021[closest_match$TeamNames == "TCU" ] <- "TX Christian"
+closest_match$schedule_2021[closest_match$TeamNames == "Tennessee St" ] <- "TN State"
+closest_match$schedule_2021[closest_match$TeamNames == "Tulane" ] <- "Tulane"
+closest_match$schedule_2021[closest_match$TeamNames == "UTRGV" ] <- "TX-Pan Am"
+closest_match$schedule_2021[closest_match$TeamNames == "UCF" ] <- "Central FL"
+closest_match$schedule_2021[closest_match$TeamNames == "Louisiana" ] <- "LA Lafayette"
+closest_match$schedule_2021[closest_match$TeamNames == "S Carolina St" ] <- "S Car St"
+closest_match$schedule_2021[closest_match$TeamNames == "UMBC" ] <- "Maryland BC"
+closest_match$schedule_2021[closest_match$TeamNames == "Utah St" ] <- "Utah St"
+closest_match$schedule_2021[closest_match$TeamNames == "Virginia Tech" ] <- "VA Tech"
+closest_match$schedule_2021[closest_match$TeamNames == "VMI" ] <- "VA Military"
+closest_match$schedule_2021[closest_match$TeamNames == "West Virginia" ] <- "W Virginia"
+closest_match$schedule_2021[closest_match$TeamNames == "Yale" ] <- "Yale"
+closest_match$schedule_2021[closest_match$TeamNames == "Cal Baptist" ] <- "California Baptist"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Miss" ] <- "S Mississippi"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Univ" ] <- "Southern"
+closest_match$schedule_2021[closest_match$TeamNames == "Southern Utah" ] <- "S Utah"
+closest_match$schedule_2021[closest_match$TeamNames == "TAM C. Christi" ] <- "TX A&M-CC"
+closest_match$schedule_2021[closest_match$TeamNames == "TCU" ] <- "TX Christian"
+closest_match$schedule_2021[closest_match$TeamNames == "Tennessee St" ] <- "TN St"
+closest_match$schedule_2021[closest_match$TeamNames == "Tulane" ] <- "Tulane"
+closest_match$schedule_2021[closest_match$TeamNames == "UTRGV" ] <- "TX-Pan Am"
+closest_match$schedule_2021[closest_match$TeamNames == "UCF" ] <- "Central FL"
+closest_match$schedule_2021[closest_match$TeamNames == "Louisiana" ] <- "LA Lafayette"
+closest_match$schedule_2021[closest_match$TeamNames == "ULM" ] <- "LA Monroe"
+closest_match$schedule_2021[closest_match$TeamNames == "UMBC" ] <- "Maryland BC"
+closest_match$schedule_2021[closest_match$TeamNames == "Utah St" ] <- "Utah St"
+closest_match$schedule_2021[closest_match$TeamNames == "WKU" ] <- "W Kentucky"
+closest_match$schedule_2021[closest_match$TeamNames == "Virginia Tech" ] <- "VA Tech"
+closest_match$schedule_2021[closest_match$TeamNames == "VMI" ] <- "VA Military"
+closest_match$schedule_2021[closest_match$TeamNames == "West Virginia" ] <- "W Virginia"
+closest_match$schedule_2021[closest_match$TeamNames == "Yale" ] <- "Yale"
+closest_match$schedule_2021[closest_match$TeamNames == "Cal Baptist" ] <- "California Baptist"
+
+```
+
+```{r}
+schedule_join2 <- left_join(schedule_join1, closest_match, by = c("opponent" = "schedule_2021")) %>%
+  select(-9)
+```
+
+There seems to be some additional adjustments to team names we have to make.
+
+```{r}
+schedule_join2$TeamNames.y[schedule_join2$opponent == "VA Military"] <- "VMI"
+schedule_join2$TeamNames.y[schedule_join2$opponent == "LA Lafayette"] <- "Louisiana"
+schedule_join2$TeamNames.y[schedule_join2$opponent == "TX-Pan Am"] <- "UTRGV"
+schedule_join2$TeamNames.y[schedule_join2$opponent == "U Mass"] <- "Massachusetts"
+schedule_join2$TeamNames.y[schedule_join2$opponent == "Central FL"] <- "UCF"
+```
+
+Let's rename our columns.
+
+```{r}
+colnames(schedule_join2)[colnames(schedule_join2) == "TeamNames.x"] <- "team1_proper_name"
+colnames(schedule_join2)[colnames(schedule_join2) == "TeamNames.y"] <- "opp_proper_name"
+```
+
+Here, we are going to load the rda file we saved in the Data Wrangling Part 1. We will use this to join with the schedule information we retrieved earlier.
+
+```{r}
+load("~/MSBA/Fall 2020/Mod 2/Machine Learning/Machine Learning Project/results_samp_comprehensive.rda")
+```
+
+We're only going to look at 2020 season statistics to use as predictors for 2021 season.
+
+```{r}
+results2020 <- results_samp_comprehensive %>%
+  filter(Season == 2020)
+```
+
+Let's get the season average statistics going into each team's last game for the 2020 season as those will be the most timely.
+
+```{r}
+results2020_reordered <- results2020[order(desc(results2020$DayNum)),]
+```
+
+Let's get only team 1 stats.
+
+```{r}
+# remove duplicates
+
+team1_stats <- results2020_reordered[!duplicated(results2020_reordered$team1), ]
+
+team1_stats <- team1_stats %>%
+  select(1,3,9,14,17:36, 57, 63:64)
+```
+
+Now, let's get only opponent stats.
+
+```{r}
+opponent_stats <- results2020_reordered[!duplicated(results2020_reordered$opponent),]
+
+opponent_stats <- opponent_stats %>%
+  select(2,4,9,15,37:56, 58, 65:66 )
+
+
+```
+
+Join the team1 stats with the opponent stats.
+
+```{r}
+tot_team_szn_stats <- inner_join(team1_stats, opponent_stats, by = c("team1" = "opponent"))
+```
+
+Now we can get the stats for a team based upon their latest game so the stats are as up to date as possible. Therefore we will look at DayNum to see what statistics we want to grab. We want the statistics for that particular team when DayNum is the highest (meaning near the end of the season)
+
+```{r}
+tot_team_szn_stats <- tot_team_szn_stats %>%
+  mutate(ppg = ifelse(DayNum.x > DayNum.y, ppg, opp_ppg))%>%
+  mutate(Ranking = ifelse(DayNum.x > DayNum.y, Ranking, Opp_Ranking)) %>%
+  mutate(pts_all = ifelse(DayNum.x > DayNum.y, pts_all, opp_pts_all))%>%
+  mutate(fg_att = ifelse(DayNum.x > DayNum.y, fg_att, opp_fg_att))%>%
+  mutate(fg_acc = ifelse(DayNum.x > DayNum.y, fg_acc, opp_fg_acc))%>%
+  mutate(fg3_att = ifelse(DayNum.x > DayNum.y, fg3_att, opp_fg3_att))%>%
+  mutate(fg3_acc = ifelse(DayNum.x > DayNum.y, fg3_acc, opp_fg3_acc))%>%
+  mutate(ft_att = ifelse(DayNum.x > DayNum.y, ft_att, opp_ft_att))%>%
+  mutate(ft_acc = ifelse(DayNum.x > DayNum.y, ft_acc, opp_ft_accuracy))%>%
+  mutate(def_reb = ifelse(DayNum.x > DayNum.y, def_reb, opp_def_reb))%>%
+  mutate(off_reb = ifelse(DayNum.x > DayNum.y, off_reb, opp_off_reb))%>%
+  mutate(ast = ifelse(DayNum.x > DayNum.y, ast, opp_ast))%>%
+  mutate(to = ifelse(DayNum.x > DayNum.y, to, opp_to))%>%
+  mutate(stl = ifelse(DayNum.x > DayNum.y, stl, opp_stl))%>%
+  mutate(blk = ifelse(DayNum.x > DayNum.y, blk, opp_blk))%>%
+  mutate(pf = ifelse(DayNum.x > DayNum.y, pf, opp_pf))%>%
+  mutate(num_poss = ifelse(DayNum.x > DayNum.y, num_poss, opp_num_poss))%>%
+  mutate(off_eff = ifelse(DayNum.x > DayNum.y, off_eff, opp_off_eff))%>%
+  mutate(def_eff = ifelse(DayNum.x > DayNum.y, def_eff, opp_def_eff))%>%
+  mutate(fg3_def = ifelse(DayNum.x > DayNum.y, fg3_def, opp_fg3_def))%>%
+  mutate(pf_forced = ifelse(DayNum.x > DayNum.y, pf_forced, opp_pf_forced))%>%
+  mutate(Conf_Rank = ifelse(DayNum.x > DayNum.y, Conf_Rank, Opp_Conf_Rank))%>%
+  mutate(w_pct = ifelse(DayNum.x > DayNum.y, w_pct, opp_w_pct))%>%
+  mutate(result_avg = ifelse(DayNum.x > DayNum.y, result_avg, opp_result_avg))
+```
+
+Filter out columns.
+
+```{r}
+tot_team_szn_stats <- tot_team_szn_stats %>%
+  select(1,2,4:27)
+```
+
+Let's join these statistics with our schedule.
+
+```{r}
+schedule_join3 <- left_join(schedule_join2, tot_team_szn_stats, by = c("team1_proper_name" = "team1"))
+
+schedule_join4 <- left_join(schedule_join3, tot_team_szn_stats, by = c("opp_proper_name" = "team1"))
+
+```
+
+Rename joined schedule.
+
+```{r}
+preds_table_2021 <- schedule_join4
+```
+
+Remove variables we no longer need.
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select(-"team1", -"opponent", -"TeamID.x", -"TeamID.y")
+```
+
+We want our columns to match the column names we use as inputs for our model.
+
+```{r}
+colnames(preds_table_2021) <- c("Time", "Location", "Loc", "DateofGame", "team1", "opponent", "Ranking", "ppg", "pts_all", "fg_att", "fg_acc", "fg3_att", "fg3_acc", "ft_att", "ft_acc", "def_reb", "off_reb", "ast", "to", "stl", "blk", "pf", "num_poss", "off_eff", "def_eff", "fg3_def", "pf_forced", "Conf_Rank", "w_pct", "result_avg", 
+                                
+"Opp_Ranking", "opp_ppg", "opp_pts_all", "opp_fg_att", "opp_fg_acc", "opp_fg3_att", "opp_fg3_acc", "opp_ft_att", "opp_ft_accuracy", "opp_def_reb", "opp_off_reb", "opp_ast", "opp_to", "opp_stl", "opp_blk", "opp_pf", "opp_num_poss", "opp_off_eff", "opp_def_eff", "opp_fg3_def", "opp_pf_forced", "Opp_Conf_Rank", "opp_w_pct", "opp_result_avg"                                
+                                
+                                
+                                )
+```
+
+Here we are just putting our variables in the proper order.
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select("team1", "opponent","Time", "Location","DateofGame", "Ranking","Opp_Ranking", "Conf_Rank", "Opp_Conf_Rank", "Loc", "w_pct", "result_avg", "opp_w_pct", "opp_result_avg", "ppg", "pts_all", "fg_att", "fg_acc", "fg3_att", "fg3_acc", "ft_att", "ft_acc", "def_reb", "off_reb", "ast", "to", "stl", "blk", "pf", "num_poss", "off_eff", "def_eff", "fg3_def", "pf_forced",  "opp_ppg", "opp_pts_all", "opp_fg_att", "opp_fg_acc", "opp_fg3_att", "opp_fg3_acc", "opp_ft_att", "opp_ft_accuracy", "opp_def_reb", "opp_off_reb", "opp_ast", "opp_to", "opp_stl", "opp_blk", "opp_pf", "opp_num_poss", "opp_off_eff", "opp_def_eff", "opp_fg3_def", "opp_pf_forced")
+```
+
+We also want these derived variables.
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  mutate(Ast_TO_Ratio = ast/to) %>%
+  mutate(Opp_Ast_TO_Ratio = opp_ast/opp_to)
+```
+
+We can now eliminate assists and to stats because of this derived variable we created.
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select(-ast, -to, -opp_ast, -opp_to)
+```
+
+Drop rows where team1 or opponent is na. There are not many and these are likely NA because they represent a non-D1 team that we did not eliminate.
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  drop_na(team1, opponent)
+```
+
+#Get 2021 rankings
+
+We also want up to date rankings. KenPom provides pre-season rankings for every team before the 2021 season. These will be more reliable than using last year's rankings.
+
+```{r}
+rankings2021 <- read_html("https://kenpom.com/index.php")
+
+tbls_rnk_2021 <- html_nodes(rankings2021, "table")
+
+tbls_ls_rnk_2021 <- rankings2021 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings2021 <- (tbls_ls_rnk_2021[[1]])
+```
+
+Only need two columns.
+
+```{r}
+colnames(rankings2021) <- c("Ranking", "TeamName", "Delete1", "Delete2",  "Delete3", "Delete4", "Delete5", "Delete6", "Delete7", "Delete8", "Delete9", "Delete10", "Delete11", "Delete12", "Delete13", "Delete14", "Delete15", "Delete16", "Delete17", "Delete18", "Delete19"
+                            )
+         
+```
+
+Eliminate unnecessary rows.
+
+```{r}
+rankings2021 <- rankings2021[-1,]
+rankings2021 <-rankings2021[!(rankings2021$TeamName=="Team"),]
+```
+
+Select only teamname and ranking columns. 
+
+```{r}
+rankings2021 <- rankings2021 %>%
+  select(2,1)
+```
+
+
+```{r}
+rankings2021 <- rankings2021[!apply(rankings2021 == "", 1, all),]
+```
+
+Kaggle formats "St." as "St"
+
+```{r}
+rankings2021$TeamName<- rankings2021$TeamName %>%
+  str_replace_all(c("St." = "St"))
+```
+
+We are going to do this greedy assign function again to get the closest matches.
+
+```{r}
+d <- expand.grid(preds_table_2021$team1,rankings2021$TeamName) # Distance matrix in long form
+names(d) <- c("preds_table","Pom_Name")
+d$dist <- stringdist(d$preds_table,d$Pom_Name, method="jaccard") # String edit distance (use your favorite function here)
+
+
+closest_match2 <- data.frame(greedyAssign(as.character(d$preds_table),as.character(d$Pom_Name),d$dist))
+```
+
+```{r}
+closest_match2 <- closest_match2 %>% 
+  filter(!duplicated(paste0(pmax(schedule_2021, TeamNames), pmin(schedule_2021, TeamNames))))
+```
+
+Still have to do some manual conversion.
+
+```{r}
+closest_match2$schedule_2021[closest_match2$TeamNames == "Central Connecticut"] <- "Central Conn"
+closest_match2$schedule_2021[closest_match2$TeamNames == "East Carolina" ] <- "East Carolina"
+closest_match2$schedule_2021[closest_match2$TeamNames == "East Tennessee St" ] <- "ETSU"
+closest_match2$schedule_2021[closest_match2$TeamNames == "FIU" ] <- "Florida Intl"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Florida Atlantic" ] <- "FL Atlantic"
+closest_match2$schedule_2021[closest_match2$TeamNames == "LIU" ] <- "LIU Brooklyn"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Louisiana Monroe" ] <- "ULM"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Michigan" ] <- "Michigan"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Middle Tennessee" ] <- "Middle Tenn"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Mount St Mary's" ] <- "Mt St Mary's"
+closest_match2$schedule_2021[closest_match2$TeamNames == "North Carolina A&T" ] <- "NC A&T"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Northern Colorado" ] <- "N Colorado"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Saint Louis" ] <- "St Louis"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Saint Mary's" ] <- "St Mary's CA"
+closest_match2$schedule_2021[closest_match2$TeamNames == "South Dakota" ] <- "South Dakota"
+closest_match2$schedule_2021[closest_match2$TeamNames == "South Dakota St" ] <- "S Dakota St"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Southeastern Louisiana" ] <- "SE Louisiana"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Southern" ] <- "Southern Univ"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Southern Illinois" ] <- "S Illinois"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Tarleton St" ] <- "Tarleton St"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Tulane" ] <- "Tulane"
+closest_match2$schedule_2021[closest_match2$TeamNames == "UMKC" ] <- "Missouri KC"
+closest_match2$schedule_2021[closest_match2$TeamNames == "UT Rio Grande Valley" ] <- "UTRGV"
+closest_match2$schedule_2021[closest_match2$TeamNames == "UTSA" ] <- "UT San Antonio"
+```
+
+Now we can go ahead and make the join between the predictions table and the closest match to get these rankings.
+
+```{r}
+preds_join1 <- left_join(preds_table_2021, closest_match2, by = c("team1" = "schedule_2021")) %>%
+  select(-54)
+
+```
+
+We will repeat the same steps to get opponent ranking.
+
+```{r}
+d <- expand.grid(preds_table_2021$opponent,rankings2021$TeamName) # Distance matrix in long form
+names(d) <- c("preds_table","Pom_Name")
+d$dist <- stringdist(d$preds_table,d$Pom_Name, method="jaccard") # String edit distance (use your favorite function here)
+
+
+closest_match2 <- data.frame(greedyAssign(as.character(d$preds_table),as.character(d$Pom_Name),d$dist))
+```
+
+
+```{r}
+closest_match2 <- closest_match2 %>% 
+  filter(!duplicated(paste0(pmax(schedule_2021, TeamNames), pmin(schedule_2021, TeamNames))))
+```
+
+
+
+```{r}
+closest_match2$schedule_2021[closest_match2$TeamNames == "Central Connecticut"] <- "Central Conn"
+closest_match2$schedule_2021[closest_match2$TeamNames == "East Carolina" ] <- "East Carolina"
+closest_match2$schedule_2021[closest_match2$TeamNames == "East Tennessee St" ] <- "ETSU"
+closest_match2$schedule_2021[closest_match2$TeamNames == "FIU" ] <- "Florida Intl"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Florida Atlantic" ] <- "FL Atlantic"
+closest_match2$schedule_2021[closest_match2$TeamNames == "LIU" ] <- "LIU Brooklyn"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Louisiana Monroe" ] <- "ULM"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Michigan" ] <- "Michigan"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Middle Tennessee" ] <- "Middle Tenn"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Mount St Mary's" ] <- "Mt St Mary's"
+closest_match2$schedule_2021[closest_match2$TeamNames == "North Carolina A&T" ] <- "NC A&T"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Northern Colorado" ] <- "N Colorado"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Saint Louis" ] <- "St Louis"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Saint Mary's" ] <- "St Mary's CA"
+closest_match2$schedule_2021[closest_match2$TeamNames == "South Dakota" ] <- "South Dakota"
+closest_match2$schedule_2021[closest_match2$TeamNames == "South Dakota St" ] <- "S Dakota St"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Southeastern Louisiana" ] <- "SE Louisiana"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Southern" ] <- "Southern Univ"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Southern Illinois" ] <- "S Illinois"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Tarleton St" ] <- "Tarleton St"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Tulane" ] <- "Tulane"
+closest_match2$schedule_2021[closest_match2$TeamNames == "UMKC" ] <- "Missouri KC"
+closest_match2$schedule_2021[closest_match2$TeamNames == "UT Rio Grande Valley" ] <- "UTRGV"
+closest_match2$schedule_2021[closest_match2$TeamNames == "UTSA" ] <- "UT San Antonio"
+
+closest_match2$schedule_2021[closest_match2$TeamNames == "UC San Diego" ] <- "UC San Diego"
+closest_match2$schedule_2021[closest_match2$TeamNames == "Cal Baptist" ] <- "Cal Baptist"
+closest_match2$schedule_2021[closest_match2$TeamNames == "North Carolina Central" ] <- "NC Central"
+```
+
+
+```{r}
+preds_join2 <- left_join(preds_join1, closest_match2, by = c("opponent" = "schedule_2021")) %>%
+  select(-55)
+```
+
+We still need to do some manual inputting.
+
+```{r}
+preds_join2$TeamNames.x[preds_join2$team1 == "W Michigan"] <- "Western Michigan"
+preds_join2$TeamNames.y[preds_join2$team1 == "W Michigan"] <- "Western Michigan"
+preds_join2$TeamNames.x[preds_join2$opponent == "W Michigan"] <- "Western Michigan"
+preds_join2$TeamNames.y[preds_join2$opponent == "W Michigan"] <- "Western Michigan"
+
+
+preds_join2$TeamNames.x[preds_join2$team1 == "SIUE"] <- "SIU Edwardsville"
+preds_join2$TeamNames.y[preds_join2$team1 == "SIUE"] <- "SIU Edwardsville"
+preds_join2$TeamNames.x[preds_join2$opponent == "SIUE"] <- "SIU Edwardsville"
+preds_join2$TeamNames.y[preds_join2$opponent == "SIUE"] <- "SIU Edwardsville"
+
+
+preds_join2$TeamNames.x[preds_join2$team1 == "TX Southern"] <- "Texas Southern"
+preds_join2$TeamNames.y[preds_join2$team1 == "TX Southern"] <- "Texas Southern"
+preds_join2$TeamNames.x[preds_join2$opponent == "TX Southern"] <- "Texas Southern"
+preds_join2$TeamNames.y[preds_join2$opponent == "TX Southern"] <- "Texas Southern"
+
+preds_join2$TeamNames.x[preds_join2$team1 == "WKU"] <- "Western Kentucky"
+preds_join2$TeamNames.y[preds_join2$team1 == "WKU"] <- "Western Kentucky"
+preds_join2$TeamNames.x[preds_join2$opponent == "WKU"] <- "Western Kentucky"
+preds_join2$TeamNames.y[preds_join2$opponent == "WKU"] <- "Western Kentucky"
+
+preds_join2$TeamNames.x[preds_join2$team1 == "MTSU"] <- "Middle Tennessee"
+preds_join2$TeamNames.y[preds_join2$team1 == "MTSU"] <- "Middle Tennessee"
+preds_join2$TeamNames.x[preds_join2$opponent == "MTSU"] <- "Middle Tennessee"
+preds_join2$TeamNames.y[preds_join2$opponent == "MTSU"] <- "Middle Tennessee"
+
+preds_join2$TeamNames.x[preds_join2$team1 == "TX Southern"] <- "Texas Southern"
+preds_join2$TeamNames.y[preds_join2$team1 == "TX Southern"] <- "Texas Southern"
+preds_join2$TeamNames.x[preds_join2$opponent == "TX Southern"] <- "Texas Southern"
+preds_join2$TeamNames.y[preds_join2$opponent == "TX Southern"] <- "Texas Southern"
+
+```
+
+Now we can join rankings.
+
+```{r}
+rankings_join1 <- left_join(preds_join2, rankings2021, by = c("TeamNames.x" = "TeamName"))
+rankings_join2 <- left_join(rankings_join1, rankings2021, by = c("TeamNames.y" = "TeamName"))
+```
+
+Eliminate columns no longer needed.
+
+```{r}
+rankings_join2 <- rankings_join2 %>%
+  select(-"Ranking.x", - "Opp_Ranking")
+```
+
+Rename relevant ranking columns.
+
+```{r}
+colnames(rankings_join2)[colnames(rankings_join2) == "Ranking"] <- "Opp_Ranking"
+colnames(rankings_join2)[colnames(rankings_join2) == "Ranking.y"] <- "Ranking"
+```
+
+Select only necessary columns.
+
+```{r}
+rankings_join2 <- rankings_join2 %>%
+  select(1:5,53:54,6:50)
+```
+
+
+```{r}
+preds_table_2021 <- rankings_join2
+```
+
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  arrange(team1) 
+```
+
+We'll have to do some work with the Dates
+
+```{r}
+preds_table_2021$DateofGame <- gsub('\\s+',' ',preds_table_2021$DateofGame)
+
+preds_table_2021 <- separate(preds_table_2021, DateofGame, c(NA, 'DateofGame', 'day'), sep = ' ')
+
+preds_table_2021$DateofGame <- paste(preds_table_2021$DateofGame, preds_table_2021$day)
+```
+
+
+```{r}
+preds_table_2021$DateofGame <- ifelse(str_detect(preds_table_2021$DateofGame, '[ND]') == TRUE,
+           paste(2020, preds_table_2021$DateofGame),
+           paste(2021, preds_table_2021$DateofGame))
+```
+
+
+```{r}
+preds_table_2021 <- preds_table_2021 %>%
+  select(-6)
+```
+
+Now we have the predictions table we want and will be ready to make predictions after running our model.
+
+```{r}
+save(preds_table_2021, file = "preds_table_2021.rda")
+```
+
+
+

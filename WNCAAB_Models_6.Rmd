@@ -1,0 +1,462 @@
+---
+title: "XGBoost CBB-Women"
+author: "Tiffany Tseng"
+date: "11/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load dataset and libraries
+
+```{r load libraries}
+#install.packages("xgboost")
+#install.packages("caret")
+#install.packages("OptimalCutpoints")
+#install.packages("ggplot2")
+#library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+library(OptimalCutpoints) # Load optimal cutpoints
+library(ggplot2) # Load ggplot2
+library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(Metrics)
+library(corrplot)
+```
+
+
+ 
+```{r load dataset}
+load(file="womens_model.rda")
+```
+
+```{r}
+WomensCBB <- womens_model
+```
+
+
+```{r}
+## Actually, let's create more derived statistics
+WomensCBB <- WomensCBB %>%
+  mutate(Ast_TO_Ratio = ast/to) %>%
+  mutate(Opp_Ast_TO_Ratio = opp_ast/opp_to)
+```
+
+```{r}
+WomensCBB <- WomensCBB %>%
+  select(-ast, -to, -opp_ast, -opp_to)
+```
+
+```{r}
+# Two less columns than men's bc no conference rankings in womens
+WomensCBB <- WomensCBB %>%
+   select(14, 15, 7, 57:60, 17:52, 61, 62, 53)
+```
+
+```{r}
+WomensCBB$Ranking <- as.numeric(WomensCBB$Ranking)
+WomensCBB$Opp_Ranking <- as.numeric(WomensCBB$Opp_Ranking)
+```
+
+
+```{r determine train and test sizes}
+trainSize <- round(nrow(WomensCBB) * 0.8)
+testSize <- nrow(WomensCBB) - trainSize
+```
+
+```{r create train and teat sets}
+set.seed(1)
+ training_indices <- sample(seq_len(nrow(WomensCBB)),
+   size=trainSize)
+ trainSet <- WomensCBB[training_indices, ]
+ testSet <- WomensCBB[-training_indices, ]
+```
+
+
+```{r create training and test matrix}
+# Create training matrix
+dtrain <- xgb.DMatrix(data = as.matrix(trainSet[, 1:45]), label = trainSet$Result)
+# Create test matrix
+dtest <- xgb.DMatrix(data = as.matrix(testSet[, 1:45]), label = testSet$Result)
+```
+
+
+```{r xgboost}
+set.seed(12345)
+bst_1 <- xgb.cv(data = dtrain, 
+                nfold=5,
+               nrounds = 2000, 
+               
+               verbose = 1, 
+               print_every_n = 20, 
+               early_stopping_rounds = 20,
+               )
+```
+The best iteration is 13.
+
+```{r}
+set.seed(12345)
+bst_mod_1 <- xgb.cv(data = dtrain, # Set training data
+              
+              nfold=5,
+               
+              eta = 0.005, # Set learning rate
+              max.depth =  7, # Set max depth
+              min_child_weight = 10, # Set minimum number of samples in node to split
+              gamma = 0, # Set minimum loss reduction for split
+              subsample =  0.9, # Set proportion of training data to use in tree
+              colsample_bytree = 0.9, # Set number of variables to use in each tree
+               
+              nrounds = 100, # Set number of rounds
+              early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+               
+              verbose = 1, # 1 - Prints out fit
+              nthread = 1, # Set number of parallel threads
+              print_every_n = 20, # Prints out result every 20th iteration
+)
+
+set.seed(12345)
+bst_mod_2 <- xgb.cv(data = dtrain, # Set training data
+              
+              nfold=5,
+               
+              eta = 0.01, # Set learning rate
+              max.depth =  7, # Set max depth
+              min_child_weight = 10, # Set minimum number of samples in node to split
+              gamma = 0, # Set minimum loss reduction for split
+              subsample =  0.9, # Set proportion of training data to use in tree
+              colsample_bytree = 0.9, # Set number of variables to use in each tree
+               
+              nrounds = 100, # Set number of rounds
+              early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+               
+              verbose = 1, # 1 - Prints out fit
+              nthread = 1, # Set number of parallel threads
+              print_every_n = 20, # Prints out result every 20th iteration
+)
+
+set.seed(12345)
+bst_mod_3<- xgb.cv(data = dtrain, # Set training data
+              
+              nfold=5,
+               
+              eta = 0.05, # Set learning rate
+              max.depth =  7, # Set max depth
+              min_child_weight = 10, # Set minimum number of samples in node to split
+              gamma = 0, # Set minimum loss reduction for split
+              subsample =  0.9, # Set proportion of training data to use in tree
+              colsample_bytree = 0.9, # Set number of variables to use in each tree
+               
+              nrounds = 100, # Set number of rounds
+              early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+               
+              verbose = 1, # 1 - Prints out fit
+              nthread = 1, # Set number of parallel threads
+              print_every_n = 20, # Prints out result every 20th iteration
+)
+
+set.seed(12345)
+bst_mod_4 <- xgb.cv(data = dtrain, # Set training data
+              
+              nfold=5,
+               
+              eta = 0.1, # Set learning rate
+              max.depth =  7, # Set max depth
+              min_child_weight = 10, # Set minimum number of samples in node to split
+              gamma = 0, # Set minimum loss reduction for split
+              subsample =  0.9, # Set proportion of training data to use in tree
+              colsample_bytree = 0.9, # Set number of variables to use in each tree
+               
+              nrounds = 100, # Set number of rounds
+              early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+               
+              verbose = 1, # 1 - Prints out fit
+              nthread = 1, # Set number of parallel threads
+              print_every_n = 20, # Prints out result every 20th iteration
+)
+
+set.seed(12345)
+bst_mod_5 <- xgb.cv(data = dtrain, # Set training data
+              
+              nfold=5,
+               
+              eta = 0.3, # Set learning rate
+              max.depth =  7, # Set max depth
+              min_child_weight = 10, # Set minimum number of samples in node to split
+              gamma = 0, # Set minimum loss reduction for split
+              subsample =  0.9, # Set proportion of training data to use in tree
+              colsample_bytree = 0.9, # Set number of variables to use in each tree
+               
+              nrounds = 100, # Set number of rounds
+              early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+               
+              verbose = 1, # 1 - Prints out fit
+              nthread = 1, # Set number of parallel threads
+              print_every_n = 20, # Prints out result every 20th iteration
+)
+
+
+```
+
+```{r}
+
+# Extract results for model with eta = 0.005
+pd1 <- cbind.data.frame(bst_mod_1$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.005, nrow(bst_mod_1$evaluation_log)))
+names(pd1)[3] <- "eta"
+# Extract results for model with eta = 0.01
+pd2 <- cbind.data.frame(bst_mod_2$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.01, nrow(bst_mod_2$evaluation_log)))
+names(pd2)[3] <- "eta"
+# Extract results for model with eta = 0.05
+pd3 <- cbind.data.frame(bst_mod_3$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.05, nrow(bst_mod_3$evaluation_log)))
+names(pd3)[3] <- "eta"
+# Extract results for model with eta = 0.1
+pd4 <- cbind.data.frame(bst_mod_4$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.1, nrow(bst_mod_4$evaluation_log)))
+names(pd4)[3] <- "eta"
+# Extract results for model with eta = 0.3
+pd5 <- cbind.data.frame(bst_mod_5$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.3, nrow(bst_mod_5$evaluation_log)))
+names(pd5)[3] <- "eta"
+# Join datasets
+plot_data <- rbind.data.frame(pd1, pd2, pd3, pd4, pd5)
+# Converty ETA to factor
+plot_data$eta <- as.factor(plot_data$eta)
+# Plot points
+g_6 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_point(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "Error Rate v Number of Trees",
+       y = "Test RMSE Mean", color = "Learning \n Rate")  # Set labels
+g_6
+
+# Plot lines
+g_7 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_smooth(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "Error Rate v Number of Trees",
+       y = "Error Rate", color = "Learning \n Rate")  # Set labels
+g_7
+```
+
+
+The best learning rate is 0.1 as we can see from the graphic. 
+
+```{r fit xgboost model}
+set.seed(12345)
+bst_final <- xgboost(data = dtrain, # Set training data
+              
+        
+               
+              eta = 0.1, # Set learning rate
+              max.depth =  7, # Set max depth
+              min_child_weight = 10, # Set minimum number of samples in node to split
+              gamma = 0, # Set minimum loss reduction for split
+              subsample =  0.9, # Set proportion of training data to use in tree
+              colsample_bytree = 0.9, # Set number of variables to use in each tree
+               
+              nrounds = 50, # Set number of rounds
+              early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+               
+              verbose = 1, # 1 - Prints out fit
+              nthread = 1, # Set number of parallel threads
+              print_every_n = 20, # Prints out result every 20th iteration
+)
+
+```
+
+```{r get predictions rmse}
+boost_preds_train <- predict(bst_final, dtrain) 
+
+pred_rmse_train <- rmse(trainSet$Result, boost_preds_train)
+
+boost_preds_test <- predict(bst_final, dtest)
+
+pred_rmse_test <- rmse(testSet$Result, boost_preds_test)
+
+print(pred_rmse_train)
+print(pred_rmse_test)
+```
+
+```{r}
+t <- table(boost_preds_test >0, testSet$Result > 0)
+confusionMatrix(t)
+```
+
+
+```{r plot predictions}
+ plot(boost_preds_test,testSet$Result,
+      xlab="predicted",ylab="actual")
+```
+
+
+Extract and plot variable importance
+```{r extract and plot variable importance}
+# Extract importance
+imp_mat <- xgb.importance(model = bst_final)
+# Plot importance (top 10 variables)
+xgb.plot.importance(imp_mat, top_n = 10)
+```
+
+
+```{r}
+shap_result <- shap.score.rank(xgb_model = bst_final, 
+                X_train =as.matrix(trainSet[, 1:45]),
+                shap_approx = F)
+```
+
+
+
+```{r}
+shap_long = shap.prep(shap = shap_result,
+                           X_train = as.matrix(trainSet[, 1:45]), 
+                           top_n = 10)
+
+
+plot.shap.summary(data_long = shap_long)
+```
+
+```{r}
+load("wpreds_table_2021.rda")
+```
+
+```{r}
+wpreds_table_2021$Ranking <- as.numeric(wpreds_table_2021$Ranking)
+wpreds_table_2021$Opp_Ranking <- as.numeric(wpreds_table_2021$Opp_Ranking)
+```
+
+
+```{r}
+dpredict_2021 <- xgb.DMatrix(data = as.matrix(wpreds_table_2021[, 5:49]))
+```
+
+```{r}
+predictions_2021 <- predict(bst_final, dpredict_2021)
+```
+
+```{r}
+wcomplete_pred_tbl_2021 <- cbind(wpreds_table_2021, predictions_2021)
+```
+
+
+
+```{r}
+wcomplete_pred_tbl_2021 %>%
+  filter(team1 == "Notre Dame" | opponent == "Notre Dame") %>%
+  select(team1, opponent, DateofGame, predictions_2021)
+```
+
+
+```{r}
+wcomplete_pred_tbl_2021 <- wcomplete_pred_tbl_2021 %>%
+  mutate(win_loss = ifelse(predictions_2021 > 0, 'w','l')) %>%
+  mutate(predictions_2021 = abs(predictions_2021)) 
+```
+
+
+```{r}
+wcomplete_pred_tbl_2021 <- wcomplete_pred_tbl_2021 %>%
+  separate(Location, c('arena', 'City', 'State'), sep = ',')
+```
+
+```{r}
+wcomplete_pred_tbl_2021$predictions_2021 <- round(wcomplete_pred_tbl_2021$predictions_2021, 2)
+```
+
+
+```{r}
+
+wcomplete_pred_tbl_2021 <-  wcomplete_pred_tbl_2021 %>% 
+  arrange(team1)
+```
+
+
+```{r}
+save(wcomplete_pred_tbl_2021, file="wcomplete_pred_tbl_2021.rda")
+```
+
+# Random Forest
+
+```{r}
+set.seed(12345)
+rf_w <- randomForest(Result ~., 
+                       data = trainSet, 
+                       ntree = 100,
+                     do.trace = TRUE)
+rf_w
+```
+
+
+```{r}
+oob_error_w <- rf_w$mse 
+plot_dat_w <- cbind.data.frame(rep(1:length(oob_error_w)), oob_error_w) 
+names(plot_dat_w) <- c("trees", "oob_error") 
+
+
+# Plot oob error
+g_w <- ggplot(plot_dat_w, aes(x = trees, y = oob_error_w)) + 
+  geom_point(alpha = 0.5, color = "blue") + 
+  theme_bw() + 
+  geom_smooth() + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(), 
+        panel.background = element_blank()) + 
+  labs(x = "Number of Trees", title = "Error Rate v Number of Trees",
+       y = "Error Rate")  
+g_w 
+```
+
+```{r}
+# predict for score differential
+rf_w_preds_test <- predict(rf_w, testSet) 
+rf_w_preds_train <- predict(rf_w, trainSet)
+rmse_test_w <- RMSE(testSet$Result, rf_w_preds_test)
+rmse_train_w <- RMSE(trainSet$Result, rf_w_preds_train)
+rmse_test_w
+rmse_train_w
+```
+
+```{r}
+# predict for win/loss
+t_win_w <- table(rf_w_preds_test >0, testSet$Result > 0)
+confusionMatrix(t_win_w)
+t_loss_w <- table(rf_w_preds_test <0, testSet$Result < 0)
+confusionMatrix(t_loss_w)
+```
+
+# Linear Model
+
+```{r}
+linear_model_2 <- lm(Result ~. , data = trainSet)
+```
+
+
+
+```{r}
+lm_preds_train <- predict(linear_model_2, trainSet) 
+
+pred_rmse_train_lm <- rmse(trainSet$Result, lm_preds_train)
+
+lm_preds_test <- predict(linear_model_2, testSet)
+
+pred_rmse_test_lm <- rmse(testSet$Result, lm_preds_test)
+
+print(pred_rmse_train_lm)
+print(pred_rmse_test_lm)
+```
+
+
+

@@ -1,0 +1,1009 @@
+---
+title: "MNCAAB_Data_Wrangling_1"
+author: "Conor McGrath"
+date: "10/30/2020"
+output: html_document
+---
+
+
+# Intro 
+
+We are going to be working with historic data on college basketball games in order to make predictions. First, we will start with data only pertaining to men's college basketball games. In order to make a predictive model we will have to do some extensive cleaning on the data we are using from Kaggle for Google's March Madness Analytics Challenge. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Initial Steps
+
+```{r load libraries}
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(corrplot)
+```
+
+The data we are initially using is in-game statistics for teams in each game since 2003. These are essentially box score stats for teams.
+
+```{r load data}
+Detail_Results <- read_csv("./MRegularSeasonDetailedResults.csv")
+```
+
+Now that we have the data loaded in, we will examine the data by getting some summary statistics to get familiar with data.
+
+```{r summary}
+head(Detail_Results)
+tail(Detail_Results)
+glimpse(Detail_Results)
+summary(Detail_Results)
+```
+
+# Join Team Names
+
+We want to be able to know which team corresponds to each in game statistic. Therefore we will join on team ID in order to get Team Names linked with that team's stats.
+
+```{r read in team name data}
+TeamNames <- read_csv("./MTeams.csv")
+```
+
+```{r join winning team names}
+winning_team_results <- left_join(Detail_Results, TeamNames, by=c("WTeamID" = "TeamID"))
+```
+
+```{r rename winning team name column}
+winning_team_results <- winning_team_results %>%
+  rename(
+    w_team_name = TeamName
+  )
+```
+
+```{r eliminate unnecessary columns}
+winning_team_results <- winning_team_results %>%
+  select(-"FirstD1Season", -"LastD1Season")
+```
+
+Since the data is currently in terms of losing and winning teams, we need to do a second join in order to link team names with the losers stats.
+
+```{r join losing team names}
+results_with_names <- left_join(winning_team_results, TeamNames, by=c("LTeamID" = "TeamID"))
+```
+
+```{r rename losing team name column}
+results_with_names <- results_with_names %>%
+  rename(
+    l_team_name = TeamName
+  )
+```
+
+```{r eliminate more unnecessary columns}
+results_with_names <- results_with_names %>%
+  select(-"FirstD1Season", -"LastD1Season")
+```
+
+# Get Rankings
+
+We believe that team rankings will be a very important predictor. Let's load in the rankings data set from Kaggle. 
+
+```{r read in team rankings}
+TeamRankings <- read_csv("./MMasseyOrdinals.csv")
+```
+
+Common ranking systems like the AP only rank the top 25 teams. However, we are going to want a ranking system that ranks all of the teams. We also want a ranking system that goes back to 2003.
+
+Let's see which ranking systems have been most prevelant:
+
+```{r ranking check}
+TeamRankings$SystemName <- as.factor(TeamRankings$SystemName)
+summary(TeamRankings$SystemName)
+```
+
+Let's go with the Ken Pomeroy ratings (POM) which have been around since 2002 and are highly respected and also highly correlated with the consensus. They also ranking every single team in college basketball unlike the AP poll which only ranks the top 25. 
+
+```{r select POM rankings only}
+TeamRankings <- TeamRankings %>%
+  filter(SystemName == "POM") %>%
+  arrange(Season, RankingDayNum)
+TeamRankings
+```
+
+Now we can join this ranking system with the game results.
+
+```{r loop to join rankings to }
+# Create vectors to store ranks
+l_ranking <- w_ranking <- rep(NA, nrow(results_with_names))
+# For each row in data
+for(i in 1:nrow(results_with_names)){
+  # Extract rankings for winning team and season before days
+  w_temp <- TeamRankings[TeamRankings$Season == results_with_names$Season[i] &
+                         TeamRankings$TeamID == results_with_names$WTeamID[i] & 
+                           TeamRankings$RankingDayNum <= results_with_names$DayNum[i],]
+  # If ranking exists
+  if(nrow(w_temp)){
+    # Find closest ranking
+    close_row <- which.min(abs(w_temp$RankingDayNum - results_with_names$DayNum[i]))
+    # Assign ranking
+    w_ranking[i] <- w_temp$OrdinalRank[close_row]
+  }
+  # Extract rankings for losing team and season before days
+    l_temp <- TeamRankings[TeamRankings$Season == results_with_names$Season[i] &
+                         TeamRankings$TeamID == results_with_names$LTeamID[i] & 
+                           TeamRankings$RankingDayNum <= results_with_names$DayNum[i],]
+    # If ranking exists
+  if(nrow(l_temp)){
+    # Find closest ranking
+    close_row <- which.min(abs(l_temp$RankingDayNum - results_with_names$DayNum[i]))
+    # Assign ranking
+    l_ranking[i] <- l_temp$OrdinalRank[close_row]
+  }
+}
+
+# Add rankings to dataset
+results_with_names$w_ranking <- w_ranking
+results_with_names$l_ranking <- l_ranking
+```
+
+Now that we have rankings, let's rename our data frame
+
+```{r assign new variable name}
+results_with_rankings <- results_with_names
+```
+
+# Add derived stats
+
+Here we are going to add some more variables to the model that we will consider "derived stats". These will likely be better to interpret and probably hold more predictive power than variables on their own. For example, offensive efficiency is a really important variable in the game of basketball that we can calculate from existing variables in our data frame.
+
+```{r calculate derived stats}
+results_with_rankings <- results_with_rankings %>%
+  mutate(WFGAcc = (WFGM/WFGA)) %>%
+  mutate(WFG3Acc = (WFGM3/WFGA3)) %>%
+  mutate(WFTAcc = (WFTM/WFTA)) %>%
+  mutate(LFGAcc = (LFGM/LFGA)) %>%
+  mutate(LFG3Acc =(LFGM3/LFGA3)) %>%
+  mutate(LFTAcc = (LFTM/LFTA)) %>%
+  mutate(NumWPOSS = (WFGA - WOR + WTO + (.4*WFTA))) %>%
+  mutate(NumLPOSS = (LFGA - LOR + LTO + (.4*LFTA))) %>%
+  mutate(WOffEff = (WScore/NumWPOSS)*100) %>%
+  mutate(WDefEff= (LScore/NumLPOSS)*100) %>%
+  mutate(LOffEff = (LScore/NumLPOSS)*100) %>%
+  mutate(LDefEff = (WScore/NumWPOSS)*100) %>%
+  mutate(WFG3Def = LFG3Acc) %>%
+  mutate(LFG3Def = WFG3Acc)%>%
+  mutate(WPFForced = LPF) %>%
+  mutate(LPFForced = WPF)
+ 
+```
+
+There were some games where the FTA were 0. Therefore the FT accuacy columns will have NAs when they should have 0.0000 (because of dividing by 0). Let's replace these with NAs.
+
+```{r replace NAs with 0}
+results_with_rankings$WFTAcc[is.na(results_with_rankings$WFTAcc)] <- 0
+results_with_rankings$LFTAcc[is.na(results_with_rankings$LFTAcc)] <- 0
+```
+
+Rename the new data frame with these dervied statistics.
+
+```{r rename dervied stats}
+results_with_derived_stats <- results_with_rankings
+```
+
+# Create season statistic averages columns for each team
+
+We can use the in-game stats to create season averages for each team up to the current game. These season average statistics will help with making predictions.
+
+```{r create szn stats avgs}
+# Create data frame to store results
+game_avg_db <- as.data.frame(matrix(NA, nrow = nrow(results_with_derived_stats), ncol = 40))
+# Name columns
+names(game_avg_db) <- c("w_ppg", "w_pts_all", "w_fg_att", "w_fg_acc", "w_fg3_att", "w_fg3_acc", "w_ft_att", "w_ft_acc", "w_def_reb", "w_off_reb","w_ast", "w_to", "w_stl", "w_blk", "w_pf", "w_num_poss", "w_off_eff", "w_def_eff", "w_fg3_def", "w_pf_forced", "l_ppg", "l_pts_all", "l_fg_att", "l_fg_acc", "l_fg3_att", "l_fg3_acc", "l_ft_att", "l_ft_acc", "l_def_reb", "l_off_reb","l_ast", "l_to", "l_stl", "l_blk", "l_pf", "l_num_poss", "l_off_eff", "l_def_eff", "l_fg3_def", "l_pf_forced")
+
+# For each row
+for(i in 1:nrow(results_with_derived_stats)){
+  ## Calculate winner stats 
+  # Extract winner stats for won games
+  win_win_db <- results_with_derived_stats[
+                      results_with_derived_stats$WTeamID == results_with_derived_stats$WTeamID[i] &
+                      results_with_derived_stats$Season == results_with_derived_stats$Season[i] &
+                      results_with_derived_stats$DayNum < results_with_derived_stats$DayNum[i], 
+                      c("WScore", "LScore", "WFGA", "WFGAcc", "WFGA3", "WFG3Acc", "WFTA", "WFTAcc", "WDR", "WOR", "WAst", "WTO", "WStl", "WBlk", "WPF", "NumWPOSS", "WOffEff", "WDefEff", "WFG3Def", "WPFForced")]
+  # Extract winner stats for lost games
+  win_loss_db <- results_with_derived_stats[
+                      results_with_derived_stats$LTeamID == results_with_derived_stats$WTeamID[i] &
+                      results_with_derived_stats$Season == results_with_derived_stats$Season[i] &
+                      results_with_derived_stats$DayNum < results_with_derived_stats$DayNum[i], 
+                      c("LScore", "WScore", "LFGA", "LFGAcc", "LFGA3", "LFG3Acc", "LFTA", "LFTAcc", "LDR", "LOR", "LAst", "LTO", "LStl", "LBlk", "LPF", "NumLPOSS", "LOffEff", "LDefEff", "LFG3Def", "LPFForced")]
+  # Name columns
+  names(win_win_db) <- names(win_loss_db) <- c("PPG", "OppPPG", "FGA", "FGAcc", "FGA3", "FGAcc3", "FTA", "FTAcc", "DR", "OR", "Ast", "TO", "Stl", "Blk", "PF", "NumPoss", "OffEff", "DefEff", "FG3Def", "PFForced")
+  # Join win and loss averages
+  win_db <- rbind.data.frame(win_win_db, win_loss_db)
+  
+  # Store statistic columns
+  game_avg_db$w_ppg[i] <- mean(win_db$PPG)
+  game_avg_db$w_pts_all[i] <- mean(win_db$OppPPG)
+  game_avg_db$w_fg_att[i] <- mean(win_db$FGA)
+  game_avg_db$w_fg_acc[i] <- mean(win_db$FGAcc)
+  game_avg_db$w_fg3_att[i] <- mean(win_db$FGA3)
+  game_avg_db$w_fg3_acc[i] <- mean(win_db$FGAcc3)
+  game_avg_db$w_ft_att[i] <- mean(win_db$FTA)
+  game_avg_db$w_ft_acc[i] <- mean(win_db$FTAcc)
+  game_avg_db$w_def_reb[i] <- mean(win_db$DR)
+  game_avg_db$w_off_reb[i] <- mean(win_db$OR)
+  game_avg_db$w_ast[i] <- mean(win_db$Ast)
+  game_avg_db$w_to[i] <- mean(win_db$TO)
+  game_avg_db$w_stl[i] <- mean(win_db$Stl)
+  game_avg_db$w_blk[i] <- mean(win_db$Blk)
+  game_avg_db$w_pf[i] <- mean(win_db$PF)
+  game_avg_db$w_num_poss[i] <- mean(win_db$NumPoss)
+  game_avg_db$w_off_eff[i] <- mean(win_db$OffEff)
+  game_avg_db$w_def_eff[i] <- mean(win_db$DefEff)
+  game_avg_db$w_fg3_def[i] <- mean(win_db$FG3Def)
+  game_avg_db$w_pf_forced[i] <- mean(win_db$PFForced)
+  
+  
+  ## Calculate loser stats 
+  # Extract loser stats for won games
+  loss_win_db <- results_with_derived_stats[
+                      results_with_derived_stats$WTeamID == results_with_derived_stats$LTeamID[i] &
+                      results_with_derived_stats$Season == results_with_derived_stats$Season[i] &
+                      results_with_derived_stats$DayNum < results_with_derived_stats$DayNum[i],
+                      c("WScore", "LScore", "WFGA", "WFGAcc", "WFGA3", "WFG3Acc", "WFTA", "WFTAcc", "WDR", "WOR", "WAst", "WTO", "WStl", "WBlk", "WPF", "NumWPOSS", "WOffEff", "WDefEff", "WFG3Def", "WPFForced")]
+  # Extract loser stats for lost game
+  loss_loss_db <- results_with_derived_stats[
+                      results_with_derived_stats$LTeamID == results_with_derived_stats$LTeamID[i] &
+                      results_with_derived_stats$Season == results_with_derived_stats$Season[i] &
+                      results_with_derived_stats$DayNum < results_with_derived_stats$DayNum[i], 
+                      c("LScore", "WScore", "LFGA", "LFGAcc", "LFGA3", "LFG3Acc", "LFTA", "LFTAcc", "LDR", "LOR", "LAst", "LTO", "LStl", "LBlk", "LPF", "NumLPOSS", "LOffEff", "LDefEff", "LFG3Def", "LPFForced")]
+  # Name columns
+  names(loss_win_db) <- names(loss_loss_db) <- c("PPG", "OppPPG", "FGA", "FGAcc", "FGA3", "FGAcc3", "FTA", "FTAcc", "DR", "OR", "Ast", "TO", "Stl", "Blk", "PF", "NumPoss", "OffEff", "DefEff", "FG3Def", "PFForced")
+  # Join win and loss data
+  loss_db <- rbind.data.frame(loss_win_db, loss_loss_db)
+  
+  # Store statistic columns
+ game_avg_db$l_ppg[i] <- mean(loss_db$PPG)
+  game_avg_db$l_pts_all[i] <- mean(loss_db$OppPPG)
+  game_avg_db$l_fg_att[i] <- mean(loss_db$FGA)
+  game_avg_db$l_fg_acc[i] <- mean(loss_db$FGAcc)
+  game_avg_db$l_fg3_att[i] <- mean(loss_db$FGA3)
+  game_avg_db$l_fg3_acc[i] <- mean(loss_db$FGAcc3)
+  game_avg_db$l_ft_att[i] <- mean(loss_db$FTA)
+  game_avg_db$l_ft_acc[i] <- mean(loss_db$FTAcc)
+  game_avg_db$l_def_reb[i] <- mean(loss_db$DR)
+  game_avg_db$l_off_reb[i] <- mean(loss_db$OR)
+  game_avg_db$l_ast[i] <- mean(loss_db$Ast)
+  game_avg_db$l_to[i] <- mean(loss_db$TO)
+  game_avg_db$l_stl[i] <- mean(loss_db$Stl)
+  game_avg_db$l_blk[i] <- mean(loss_db$Blk)
+  game_avg_db$l_pf[i] <- mean(loss_db$PF)
+  game_avg_db$l_num_poss[i] <- mean(loss_db$NumPoss)
+  game_avg_db$l_off_eff[i] <- mean(loss_db$OffEff)
+  game_avg_db$l_def_eff[i] <- mean(loss_db$DefEff)
+  game_avg_db$l_fg3_def[i] <- mean(loss_db$FG3Def)
+  game_avg_db$l_pf_forced[i] <- mean(loss_db$PFForced)
+}
+
+
+
+```
+
+```{r save szn stats}
+results_with_szn_stats <- cbind.data.frame(results_with_derived_stats, game_avg_db)
+```
+
+# Add real dates to the games
+
+Currently, we are given a DayNum variable which explains what day number of the season the game is being played. However, having an actual date would be a lot more useful. Let's make that conversion by loading in a dataset from Kaggle that tells us on what date each season starts.
+
+```{r load in seasons start data}
+MSeasonsStart <- read_csv("./MSeasonsStart.csv")
+```
+
+Here, DayZero represents the earliest season start date.
+
+```{r format column as Date}
+MSeasonsStart$DayZero <- as.Date(MSeasonsStart$DayZero, "%m/%d/%Y")
+```
+
+Join Season Start date to our datatable.
+
+```{r join season start with results}
+results_with_dates <- left_join(results_with_szn_stats, MSeasonsStart, by = c("Season" = "Season"))
+```
+
+Add Season Start to the Number of Days in the season that game was played to get date of game played.
+
+```{r add day num to day zero}
+results_with_dates$DateOfGame = results_with_dates$DayZero + results_with_dates$DayNum
+```
+
+Eliminate Day Zero column since it is no longer needed now that we have the date.
+```{r remove DayZero column}
+results_with_dates <- results_with_dates %>%
+  select(-95)
+```
+
+It might also be useful to parse the date out into a year, month, and day column.
+
+```{r load lubridate}
+library(lubridate)
+```
+
+```{r create year month and day columns}
+results_with_parsed_dates <- results_with_dates %>%
+  dplyr::mutate(YearOfGame = lubridate::year(DateOfGame), 
+                MonthOfGame = lubridate::month(DateOfGame), 
+                DayOfGame = lubridate::day(DateOfGame))
+```
+
+# Turn Win and Lose Columns into Team 1 v. Opponent
+
+Doing this will make it easier to make predictions since we obviously won't know who the winner of a game is before the game is played.
+
+```{r sample from w and l teams}
+results_samp_format <- cbind(results_with_parsed_dates, team1 = apply(results_with_parsed_dates[35:36], 1, sample, size = 1))
+```
+
+```{r create opponent column}
+results_samp_format$opponent <- ifelse(results_samp_format$team1 == results_samp_format$w_team_name, results_samp_format$l_team_name, results_samp_format$w_team_name)
+```
+
+```{r mutate columns into proper format}
+
+massive_df <- results_samp_format %>%
+  mutate(TeamID = ifelse(w_team_name == team1, WTeamID, LTeamID)) %>%
+  mutate(Opp_TeamID = ifelse(w_team_name == team1, LTeamID, WTeamID)) %>%
+  mutate(Score = ifelse(w_team_name == team1, WScore, LScore)) %>%
+  mutate(Opp_Score = ifelse(w_team_name == team1, LScore, WScore)) %>%
+  mutate(Loc = ifelse(w_team_name == team1 & WLoc == "H", 2, 
+                ifelse(w_team_name == team1 & WLoc == "A", 0,
+                ifelse(w_team_name == opponent & WLoc == "H", 0,
+                ifelse(w_team_name == opponent & WLoc == "A", 2, 1)) ))) %>%
+  
+  mutate(FGM = ifelse(w_team_name == team1, WFGM, LFGM)) %>%
+  mutate(FGA = ifelse(w_team_name == team1, WFGA, LFGA)) %>%
+  mutate(FGM3 = ifelse(w_team_name == team1, WFGM3, LFGM3)) %>%  
+  mutate(FGA3 = ifelse(w_team_name == team1, WFGA3, LFGA3)) %>%
+  mutate(FTM = ifelse(w_team_name == team1, WFTM, LFTM)) %>%
+  mutate(FTA = ifelse(w_team_name == team1, WFTA, LFTA)) %>%
+  mutate(OR = ifelse(w_team_name == team1, WOR, LOR)) %>%
+  mutate(DR = ifelse(w_team_name == team1, WDR, LDR)) %>%
+  mutate(AST = ifelse(w_team_name == team1, WAst, LAst)) %>%
+  mutate(TO = ifelse(w_team_name == team1, WTO, LTO)) %>%
+  mutate(STL = ifelse(w_team_name == team1, WStl, LStl)) %>%
+  mutate(BLK = ifelse(w_team_name == team1, WBlk, LBlk)) %>%
+  mutate(PF = ifelse(w_team_name == team1, WPF, LPF)) %>%
+  
+  mutate(OPP_FGM = ifelse(w_team_name == team1, LFGM, WFGM)) %>%
+  mutate(OPP_FGA = ifelse(w_team_name == team1, LFGA, WFGA)) %>%
+  mutate(OPP_FGM3 = ifelse(w_team_name == team1, LFGM3, WFGM3)) %>%  
+  mutate(OPP_FGA3 = ifelse(w_team_name == team1, LFGA3, WFGA3)) %>%
+  mutate(OPP_FTM = ifelse(w_team_name == team1, LFTM, WFTM)) %>%
+  mutate(OPP_FTA = ifelse(w_team_name == team1, LFTA, WFTA)) %>%
+  mutate(OPP_OR = ifelse(w_team_name == team1, LOR, WOR)) %>%
+  mutate(OPP_DR = ifelse(w_team_name == team1, LDR, WDR)) %>%
+  mutate(OPP_AST = ifelse(w_team_name == team1, LAst, WAst)) %>%
+  mutate(OPP_TO = ifelse(w_team_name == team1, LTO, WTO)) %>%
+  mutate(OPP_STL = ifelse(w_team_name == team1, LStl, WStl)) %>%
+  mutate(OPP_BLK = ifelse(w_team_name == team1, LBlk, WBlk)) %>%
+  mutate(OPP_PF = ifelse(w_team_name == team1, LPF, WPF)) %>%
+  
+  mutate(FGACC = ifelse(w_team_name == team1, WFGAcc, LFGAcc)) %>%
+  mutate(FG3ACC = ifelse(w_team_name == team1, WFG3Acc, LFG3Acc)) %>%
+  mutate(FTACC = ifelse(w_team_name == team1, WFTAcc, LFTAcc)) %>%
+  mutate(OPP_FGACC = ifelse(w_team_name == team1, LFGAcc, WFGAcc)) %>%
+  mutate(OPP_FG3ACC = ifelse(w_team_name == team1, LFG3Acc, WFG3Acc)) %>%
+  mutate(OPP_FTACC = ifelse(w_team_name == team1, LFTAcc, WFTAcc)) %>%
+  mutate(NUMPOSS = ifelse(w_team_name == team1, NumWPOSS, NumLPOSS)) %>%
+  mutate(OPP_NUMPOSS = ifelse(w_team_name == team1, NumLPOSS, NumWPOSS)) %>%
+  mutate(OFFEFF = ifelse(w_team_name == team1, WOffEff, LOffEff)) %>%
+  mutate(DEFEFF = ifelse(w_team_name == team1, WDefEff, LDefEff)) %>%
+  mutate(OPP_OFFEFF = ifelse(w_team_name == team1, LOffEff, WOffEff)) %>%
+  mutate(OPP_DEFEFF = ifelse(w_team_name == team1, LDefEff, WDefEff)) %>%
+  mutate(FG3DEF = ifelse(w_team_name == team1, WFG3Def, LFG3Def)) %>%
+  mutate(OPP_FG3DEF = ifelse(w_team_name == team1,LFG3Def, WFG3Def)) %>%
+  mutate(PFFORCED = ifelse(w_team_name == team1, WPFForced, LPFForced)) %>%
+  mutate(OPP_PFFORCED = ifelse(w_team_name == team1, LPFForced, WPFForced)) %>%
+  
+
+  mutate(ppg = ifelse(w_team_name == team1, w_ppg, l_ppg)) %>%
+  mutate(pts_all = ifelse(w_team_name == team1, w_pts_all, l_pts_all)) %>%
+  mutate(fg_att = ifelse(w_team_name == team1, w_fg_att, l_fg_att)) %>%
+  mutate(fg_acc = ifelse(w_team_name == team1, w_fg_acc, l_fg_acc)) %>%
+  mutate(fg3_att = ifelse(w_team_name == team1, w_fg3_att, l_fg3_att)) %>%
+  mutate(fg3_acc = ifelse(w_team_name == team1, w_fg3_acc, l_fg3_acc)) %>%
+  mutate(ft_att = ifelse(w_team_name == team1, w_ft_att, l_ft_att)) %>%
+  mutate(ft_acc = ifelse(w_team_name == team1, w_ft_acc, l_ft_acc)) %>%
+  mutate(def_reb = ifelse(w_team_name == team1, w_def_reb, l_def_reb)) %>%
+  mutate(off_reb = ifelse(w_team_name == team1, w_off_reb, l_off_reb)) %>%
+  mutate(ast = ifelse(w_team_name == team1, w_ast, l_ast)) %>%
+  mutate(to = ifelse(w_team_name == team1, w_to, l_to)) %>%
+  mutate(stl = ifelse(w_team_name == team1, w_stl, l_stl)) %>%
+  mutate(blk = ifelse(w_team_name == team1, w_blk, l_blk)) %>%
+  mutate(pf = ifelse(w_team_name == team1, w_pf, l_pf)) %>%
+  mutate(num_poss = ifelse(w_team_name == team1, w_num_poss, l_num_poss)) %>%
+  mutate(off_eff = ifelse(w_team_name == team1, w_off_eff, l_off_eff)) %>%
+  mutate(def_eff = ifelse(w_team_name == team1, w_def_eff, l_def_eff)) %>%
+  mutate(fg3_def = ifelse(w_team_name == team1, w_fg3_def, l_fg3_def)) %>%
+  mutate(pf_forced = ifelse(w_team_name == team1, w_pf_forced, l_pf_forced)) %>%
+  
+  mutate(opp_ppg = ifelse(w_team_name == team1, l_ppg, w_ppg)) %>%
+  mutate(opp_pts_all = ifelse(w_team_name == team1, l_pts_all, w_pts_all)) %>%
+  mutate(opp_fg_att = ifelse(w_team_name == team1, l_fg_att, w_fg_att)) %>%
+  mutate(opp_fg_acc = ifelse(w_team_name == team1, l_fg_acc, w_fg_acc)) %>%
+  mutate(opp_fg3_att = ifelse(w_team_name == team1, l_fg3_att, w_fg3_att)) %>%
+  mutate(opp_fg3_acc = ifelse(w_team_name == team1, l_fg3_acc, w_fg3_acc)) %>%
+  mutate(opp_ft_att = ifelse(w_team_name == team1, l_ft_att, w_ft_att)) %>%
+  mutate(opp_ft_accuracy = ifelse(w_team_name == team1, l_ft_acc, w_ft_acc)) %>%
+  mutate(opp_def_reb = ifelse(w_team_name == team1, l_def_reb, w_def_reb)) %>%
+  mutate(opp_off_reb = ifelse(w_team_name == team1, l_off_reb, w_off_reb)) %>%
+  mutate(opp_ast = ifelse(w_team_name == team1, l_ast, w_ast)) %>%
+  mutate(opp_to = ifelse(w_team_name == team1, l_to, w_to)) %>%
+  mutate(opp_stl = ifelse(w_team_name == team1, l_stl, w_stl)) %>%
+  mutate(opp_blk = ifelse(w_team_name == team1, l_blk, w_blk)) %>%
+  mutate(opp_pf = ifelse(w_team_name == team1, l_pf, w_pf)) %>%
+  mutate(opp_num_poss = ifelse(w_team_name == team1, l_num_poss, w_num_poss)) %>%
+  mutate(opp_off_eff = ifelse(w_team_name == team1, l_off_eff, w_off_eff)) %>%
+  mutate(opp_def_eff = ifelse(w_team_name == team1, l_def_eff, w_def_eff)) %>%
+  mutate(opp_fg3_def = ifelse(w_team_name == team1, l_fg3_def, w_fg3_def)) %>%
+  mutate(opp_pf_forced = ifelse(w_team_name == team1, l_pf_forced, w_pf_forced)) %>%
+  
+  mutate(Ranking = ifelse(w_team_name == team1, w_ranking, l_ranking)) %>%
+  mutate(Opp_Ranking = ifelse(w_team_name == team1, l_ranking, w_ranking))
+ 
+  
+```
+
+Using some of these columns, we can now create a data frame with only the in game statistics in the proper form.
+
+```{r create in game df}
+results_samp_in_game_stats <- massive_df %>%
+  select(99:105, 1:2, 95:98, 188:189, 8,  106:118, 132:134, 138, 140:141, 144, 146, 119:131, 135:137,139,142:143, 145, 147 )
+```
+
+We can create a dataframe with the season average statistics. This data frame will be helpful for the predictive model.
+
+```{r create predictors df}
+results_samp_predictors <- massive_df %>%
+  select(99:105, 1:2, 95:98, 188:189, 8, 148:187 )
+```
+
+The Win/Loss formatted variables are no longer relevant so we can delete those as well from the massive dataframe.
+
+```{r delete W/L format columns}
+massive_df <- massive_df %>%
+  select(-(3:7), -(9:94))
+```
+
+Now, we're mostly going to focus on the dataframe with the predictors.
+
+# Add conference rankings
+
+To predict non-conference games, it might be useful to not only have team rankings but also conference rankings. For example, if a team is not ranked as highly as their opponent, but they play in a better conference does that give that team an advantage? 
+
+```{r setup, include=FALSE}
+library(rvest)
+```
+
+We are going to get our conference rankings data from teamrankings.com. We will use what is called RPI (rating percentage index) rankings by conference. The RPI has historically been used in the selection process for the postseason NCAA tournament (aka March Madness).
+
+We are going to scrape the end of season rankings starting in 2002. This is because we are going to apply the end of season rankings to predict the next season. For example, 2002 end of season rankings will be used to predict 2003 season games.
+```{r 2002}
+webpage2002 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2002-04-02")
+
+tbls2002 <- html_nodes(webpage2002, "table")
+
+tbls_ls2002 <- webpage2002 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2002 <- (tbls_ls2002[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2003}
+webpage2003 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2003-04-08")
+
+tbls2003 <- html_nodes(webpage2003, "table")
+
+tbls_ls2003 <- webpage2003 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2003 <- tbls_ls2003[[1]] %>%
+  select(2,1)
+```
+
+```{r 2004}
+webpage2004 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2004-04-06")
+
+tbls2004 <- html_nodes(webpage2004, "table")
+
+tbls_ls2004 <- webpage2004 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2004 <- (tbls_ls2004[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2005}
+webpage2005 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2005-04-05")
+
+tbls2005 <- html_nodes(webpage2005, "table")
+
+tbls_ls2005 <- webpage2005 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2005 <- (tbls_ls2005[[1]]) %>%
+  select(2,1)
+```
+
+
+```{r 2006}
+webpage2006 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2006-04-04")
+
+tbls2006 <- html_nodes(webpage2006, "table")
+
+tbls_ls2006 <- webpage2006 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2006 <- (tbls_ls2006[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2007}
+webpage2007 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2007-04-03")
+
+tbls2007 <- html_nodes(webpage2007, "table")
+
+tbls_ls2007 <- webpage2007 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2007 <- (tbls_ls2007[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2008}
+webpage2008 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2008-04-08")
+
+tbls2008 <- html_nodes(webpage2008, "table")
+
+tbls_ls2008 <- webpage2008 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2008 <- (tbls_ls2008[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2009}
+webpage2009 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2009-04-07")
+
+tbls2009 <- html_nodes(webpage2009, "table")
+
+tbls_ls2009 <- webpage2009 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2009 <- (tbls_ls2009[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2010}
+webpage2010 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2010-04-06")
+
+tbls2010 <- html_nodes(webpage2010, "table")
+
+tbls_ls2010 <- webpage2010 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2010 <- (tbls_ls2010[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2011}
+webpage2011 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2011-04-05")
+
+tbls2011 <- html_nodes(webpage2011, "table")
+
+tbls_ls2011 <- webpage2011 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2011 <- (tbls_ls2011[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2012}
+webpage2012 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2012-04-03")
+
+tbls2012 <- html_nodes(webpage2012, "table")
+
+tbls_ls2012 <- webpage2012 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2012 <- (tbls_ls2012[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2013}
+webpage2013 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2013-04-09")
+
+tbls2013 <- html_nodes(webpage2013, "table")
+
+tbls_ls2013 <- webpage2013 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2013 <- (tbls_ls2013[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2014}
+webpage2014 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2014-04-08")
+
+tbls2014 <- html_nodes(webpage2014, "table")
+
+tbls_ls2014 <- webpage2014 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2014 <- (tbls_ls2014[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2015}
+webpage2015 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2015-04-07")
+
+tbls2015 <- html_nodes(webpage2015, "table")
+
+tbls_ls2015 <- webpage2015 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2015 <- (tbls_ls2015[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2016}
+webpage2016 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2016-04-05")
+
+tbls2016 <- html_nodes(webpage2016, "table")
+
+tbls_ls2016 <- webpage2016 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2016 <- (tbls_ls2016[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2017}
+webpage2017 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2017-04-04")
+
+tbls2017 <- html_nodes(webpage2017, "table")
+
+tbls_ls2017 <- webpage2017 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2017 <- (tbls_ls2017[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2018}
+webpage2018 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2018-04-03")
+
+tbls2018 <- html_nodes(webpage2018, "table")
+
+tbls_ls2018 <- webpage2018 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2018 <- (tbls_ls2018[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2019}
+webpage2019 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2019-04-09")
+
+tbls2019 <- html_nodes(webpage2019, "table")
+
+tbls_ls2019 <- webpage2019 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2019 <- (tbls_ls2019[[1]]) %>%
+  select(2,1)
+```
+
+```{r 2020}
+webpage2020 <- read_html("https://www.teamrankings.com/ncaa-basketball/rpi-ranking/rpi-rating-by-conf?date=2020-03-12")
+
+tbls2020 <- html_nodes(webpage2020, "table")
+
+tbls_ls2020 <- webpage2020 %>%
+        html_nodes("table") %>%
+        .[1:1] %>%
+        html_table(fill = TRUE)
+
+rankings_2020 <- (tbls_ls2020[[1]]) %>%
+  select(2,1)
+```
+
+Now that we have conference rankings for each year, we are going to join these all together.
+
+```{r join}
+rpi_by_conf <- full_join(rankings_2002, rankings_2003, by = "Conference") %>%
+  full_join(rankings_2004, by = "Conference") %>%
+  full_join(rankings_2005, by = "Conference") %>%
+  full_join(rankings_2006, by = "Conference") %>%
+  full_join(rankings_2007, by = "Conference") %>%
+  full_join(rankings_2008, by = "Conference") %>%
+  full_join(rankings_2009, by = "Conference") %>%
+  full_join(rankings_2010, by = "Conference") %>%
+  full_join(rankings_2011, by = "Conference") %>%
+  full_join(rankings_2012, by = "Conference") %>%
+  full_join(rankings_2013, by = "Conference") %>%
+  full_join(rankings_2014, by = "Conference") %>%
+  full_join(rankings_2015, by = "Conference") %>%
+  full_join(rankings_2016, by = "Conference") %>%
+  full_join(rankings_2017, by = "Conference") %>%
+  full_join(rankings_2018, by = "Conference") %>%
+  full_join(rankings_2019, by = "Conference") %>%
+  full_join(rankings_2020, by = "Conference")
+```
+
+Set column names to following year since previous year's RPI will be used to predict games for current seasons.
+
+```{r name columns}
+rpi_by_conf <- rpi_by_conf %>%
+  rename(c("2003" = "Rank.x", "2004" = "Rank.y", "2005" = "Rank.x.x", "2006" = "Rank.y.y", "2007" = "Rank.x.x.x", "2008" = "Rank.y.y.y", "2009" = "Rank.x.x.x.x", "2010" = "Rank.y.y.y.y", "2011" = "Rank.x.x.x.x.x", "2012" = "Rank.y.y.y.y.y", "2013" = "Rank.x.x.x.x.x.x", "2014" = "Rank.y.y.y.y.y.y", "2015" = "Rank.x.x.x.x.x.x.x", "2016" = "Rank.y.y.y.y.y.y.y", "2017" = "Rank.x.x.x.x.x.x.x.x", "2018" = "Rank.y.y.y.y.y.y.y.y", "2019" = "Rank.x.x.x.x.x.x.x.x.x", "2020" = "Rank.y.y.y.y.y.y.y.y.y", "2021" = "Rank"))
+```
+
+Great West joined for 2010 season and American joined for 2014 season. Thus, there is no pre-season ranking for Great West for 2010 season and American for 2014 season. Thus we will just impute this value as what that particular end of season ranking was.
+
+```{r deal w/ new conferences}
+rpi_by_conf[33, 9] <- 33
+rpi_by_conf[34, 13] <- 8
+```
+
+Pivot the table longer to match format and get ready to join with team IDs.
+
+```{r pivot}
+rpi_by_conf <- rpi_by_conf %>%
+  pivot_longer(-Conference, names_to = "Season", values_to = "Conf_rank" )
+```
+
+Now, we will join the conference rankings to each team according to what conference that team is in.
+
+First, load in table from Kaggle that details conference affiliation for each team.
+
+```{r load conference affiliation data}
+conf_aff <- read_csv("./MTeamConferencesSince2003.csv")
+```
+
+Some conferences in the data have changed names. Change value to keep name consistent. 
+
+```{r keep conf names consistent}
+conf_aff$ConfAbbrev[conf_aff$ConfAbbrev == "pac_ten"] <- "pac_twelve"
+conf_aff$ConfAbbrev[conf_aff$ConfAbbrev == "mid_cont"] <- "summit"
+```
+
+Now we want to ensure the conference names are in the same format in each dataset.
+
+```{r string manipulation}
+rpi_by_conf$Conference <- tolower(rpi_by_conf$Conference)
+rpi_by_conf$Conference <- str_replace(rpi_by_conf$Conference, " ", "_")
+```
+
+Here we will have to make some changes to ensure that the conference name spelling matches in the teamrankings.com data and Kaggle data.
+
+```{r change conf names}
+rpi_by_conf$Conference[rpi_by_conf$Conference == "big_12"] <- "big_twelve"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "pac-12"] <- "pac_twelve"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "big_12"] <- "big_twelve"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "mountain_west"] <- "mwc"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "atlantic_10"] <- "a_ten"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "horizon_league"] <- "horizon"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "atlantic_sun"] <- "a_sun"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "ohio_valley"] <- "ovc"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "northeast"] <- "nec"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "america_east"] <- "aec"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "independents"] <- "ind"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "great_west"] <- "gwc"
+rpi_by_conf$Conference[rpi_by_conf$Conference == "american"] <- "aac"
+```
+
+Now, we can join the two tables together.
+
+```{r join conf ranks with team conf aff}
+rpi_by_conf$Season <- as.numeric(rpi_by_conf$Season)
+conf_rank_per_team <- left_join(conf_aff, rpi_by_conf, by=c("Season" = "Season", "ConfAbbrev" = "Conference"))
+```
+
+Now that we have each team associated with their conference and their conference rank, we can join this information with our dataframe that has our other predictors.
+
+```{r combine conf ranks with df}
+results_samp_conf_rank <- left_join(results_samp_predictors, conf_rank_per_team, 
+          by = c("Season" = "Season", "TeamID" = "TeamID"))
+```
+
+We want to have the opponent's conference rank as well.
+
+```{r join opp conf rank}
+results_samp_conf_rank <- left_join(results_samp_conf_rank, conf_rank_per_team,
+          by = c("Season" = "Season", "Opp_TeamID" = "TeamID"))
+```
+
+Here we will clean up the dataframe by eliminating unnecessary columns and changing the names of columns.
+
+```{r clean up df}
+results_samp_conf_rank <- results_samp_conf_rank %>%
+  select(-57, -59) %>%
+  rename(Conf_Rank = Conf_rank.x,
+         Opp_Conf_Rank = Conf_rank.y)
+```
+
+# Create Target Variables
+
+Here we are going to create our target variables. We want to see not only whether a team won or lost, but also how much they won/lost by.
+
+```{r add season win pct}
+results_samp_conf_rank <- results_samp_conf_rank %>%
+  mutate(Result = Score - Opp_Score) %>%
+  mutate(Opp_Result = Opp_Score - Score) %>%
+  mutate(Win = ifelse(Result > 0, 1, 0)) %>%
+  mutate(Opp_Win = ifelse(Result > 0, 0, 1))
+```
+
+# Create season win pct and average margin of victory variables
+
+Let's rename our df so it has a shorter name.
+
+```{r rename df}
+MNCAAB <- results_samp_conf_rank
+```
+
+There are some other important variables we could use. For example, if a team has a good record they might be more likely to win than a team that has a poor record. Additionally, if a team has won their games by a large average margin, they might be more likely to win future games by a large margin as well. Therefore we will get win percentage and win margin variables.
+
+```{r season avg win pct and margin}
+# Create data frame to store results
+game_avg_db <- as.data.frame(matrix(NA, nrow = nrow(MNCAAB), ncol = 4))
+# Name columns
+names(game_avg_db) <- c("w_pct", "result_avg", "opp_w_pct", "opp_result_avg")
+
+# For each row
+for(i in 1:nrow(MNCAAB)){
+  ## Calculate team1 stats 
+  # Extract team1 stats for team1 games
+  team1_team1_db <- MNCAAB[MNCAAB$TeamID == MNCAAB$TeamID[i] &
+                      MNCAAB$Season == MNCAAB$Season[i] &
+                      MNCAAB$DayNum < MNCAAB$DayNum[i], c("Win", "Result")]
+  
+  # Extract team1 stats for opp games
+  team1_opp_db <- MNCAAB[MNCAAB$Opp_TeamID == MNCAAB$TeamID[i] &
+                      MNCAAB$Season == MNCAAB$Season[i] &
+                      MNCAAB$DayNum < MNCAAB$DayNum[i], c("Opp_Win", "Opp_Result")]
+  # Name columns
+  names(team1_team1_db) <- names(team1_opp_db) <- c("w_pct", "result_avg")
+  # Join team1 and opp averages
+  team1_db <- rbind.data.frame(team1_team1_db, team1_opp_db)
+  
+  # Store statistic columns
+  game_avg_db$w_pct[i] <- mean(team1_db$w_pct)
+  game_avg_db$result_avg[i] <- mean(team1_db$result_avg)
+  
+  ## Calculate opp stats 
+  # Extract opp stats for team1 games
+  opp_team1_db <- MNCAAB[MNCAAB$TeamID == MNCAAB$Opp_TeamID[i] &
+                      MNCAAB$Season == MNCAAB$Season[i] &
+                      MNCAAB$DayNum < MNCAAB$DayNum[i], c("Win", "Result")]
+  # Extract opp stats for opp games
+  opp_opp_db <- MNCAAB[MNCAAB$Opp_TeamID == MNCAAB$Opp_TeamID[i] &
+                      MNCAAB$Season == MNCAAB$Season[i] &
+                      MNCAAB$DayNum < MNCAAB$DayNum[i], c("Opp_Win", "Opp_Result")]
+  # Name columns
+  names(opp_team1_db) <- names(opp_opp_db) <- c("opp_w_pct", "opp_result_avg")
+  
+  # Join team1 and opp data
+  opp_db <- rbind.data.frame(opp_team1_db, opp_opp_db)
+  
+  # Store statistic columns
+  game_avg_db$opp_w_pct[i] <- mean(opp_db$opp_w_pct)
+  game_avg_db$opp_result_avg[i] <- mean(opp_db$opp_result_avg)
+}
+
+```
+
+```{r combine results of loop}
+MNCAAB2 <- cbind.data.frame(MNCAAB, game_avg_db)
+```
+
+Let's save these post loop results. We're going to want to hold onto this rda file because it will be needed in part 2 when we make a prediciton table.
+
+```{r save post loop file}
+results_samp_comprehensive <- MNCAAB2
+save(results_samp_comprehensive, file = "results_samp_comprehensive.rda")
+```
+
+
+# Final Prep for Model
+
+It looks like we have everything for our model. Now we can just clean up the dataframe to get it ready to make predictions.
+
+```{r delete non-predictors}
+MNCAAB2 <- MNCAAB2 %>%
+  select(-(1:6), -(8:11), -13, -16, -(60:62))
+```
+
+```{r reorder columns for model}
+MNCAAB2 <- MNCAAB2 %>%
+  select((3:4), (45:46), (1:2), (48:51), (5:44), 47)
+```
+
+```{r Check for NAs}
+map(MNCAAB2, ~sum(is.na(.)))
+```
+
+Not too many NAs in the dataset. Most seems to be coming from the first few games of the season when a team doesn't have any prior stats to build on or the rankings have yet to be released for the season. Since, the number of NAs is small relative to the size of the dataset, we can remove these observations.
+
+```{r drop NAs}
+MNCAAB2 <- MNCAAB2 %>%
+  drop_na()
+```
+
+We will no longer need month of game.
+
+```{r get rid of month of game}
+MNCAAB2 <- MNCAAB2 %>% 
+  select(-MonthOfGame)
+```
+
+We might actually want to add one more derived variable. Ast/TO ratio is an important variable in basketball that might be a good way of interpreting ball control for a particular team.
+
+```{r}
+MNCAAB2 <- MNCAAB2 %>%
+  mutate(Ast_TO_Ratio = ast/to) %>%
+  mutate(Opp_Ast_TO_Ratio = opp_ast/opp_to)
+```
+
+```{r}
+MNCAAB2 <- MNCAAB2 %>%
+  select(-ast, -to, -opp_ast, -opp_to)
+```
+
+```{r}
+MNCAAB2 <- MNCAAB2 %>%
+   select(1:45, 47, 48, 46)
+```
+
+Now, the dataframe is ready for the model.
+
+```{r save final df}
+MensCBB <- MNCAAB2
+save(MensCBB, file = "MensCBB.rda")
+```
+
+
